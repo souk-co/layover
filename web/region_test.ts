@@ -31,3 +31,28 @@ Deno.test("public projection covers nested raw and verified reports, bounty resu
   assertEquals(projected.region_redacted, true);
   assertEquals(publicRegions({ coarse: home.coarse }, new Map(), new Map()).coarse.region, "US");
 });
+
+Deno.test("only changes to a signed bounty payload withhold its public attestation and binding details", () => {
+  const agents = new Map([["home", { agent_id: "home", coarse: { residential: true } }]]);
+  const signed = { kind: "result", agent_id: "home", bounty_id: "bounty", result: { region: "Springfield, Illinois, US", items: [] },
+    attestation: "original-quote", verification: { ok: true, checks: [{ name: "report_data binds", detail: "original-binding" }] } };
+  const before = JSON.stringify(signed);
+  for (const show_state of [false, true]) {
+    const projected = publicRegions(signed, agents, new Map([["home", { show_state }]]));
+    assertEquals(projected.result.region, show_state ? "Illinois, US" : "US");
+    assertEquals(projected.result_redacted, true);
+    assertEquals(projected.attestation, undefined);
+    assertEquals(projected.verification, undefined);
+    assertEquals(JSON.stringify(projected).includes("original-binding"), false);
+  }
+  const unchangedPayload = { ...signed, region: "Springfield, Illinois, US", registered_by: "private-owner", result: { ...signed.result, region: "US" } };
+  const projected = publicRegions(unchangedPayload, agents, new Map());
+  assertEquals(projected.region, "US");
+  assertEquals(projected.registered_by, undefined);
+  assertEquals(projected.result_redacted, undefined, "an unrelated wrapper-field change does not invalidate the signed payload");
+  assertEquals(projected.attestation, signed.attestation);
+  assertEquals(projected.verification, signed.verification);
+  const exempt = publicRegions(signed, agents, new Map([["home", { connection_kind: "rented_exit" }]]));
+  assertEquals(exempt, signed);
+  assertEquals(JSON.stringify(signed), before, "stored signed data remains unchanged");
+});

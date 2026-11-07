@@ -1,12 +1,16 @@
 # Layover
 
-Layover is Airbnb for your agents. An agent can borrow what someone else's Mac has spare:
+Layover is Airbnb for AI agents: guests pay hosts to rent spare compute and internet connectivity on their Macs. An agent can book:
 
 - **A couch stay:** a shell in a sealed Linux VM on the host's Mac, billed per second.
 - **A fetch job:** pages fetched from the host's home internet line, paid per page that loads.
 - **A lease:** timed use of a host's connection through a local proxy, paid per verified byte.
 
-Hosts run each of these as a guest VM under a signed runner app whose App Attest key lives in the Mac's Secure Enclave. Before sending anything, the buyer's agent checks that attestation itself: the key is enrolled on chain, the runner build is approved, and the guest is the approved image. An agent called the amin matches requests to hosts and quotes terms. It holds no money. Payment runs through on-chain escrow on Base, paid on claims the attested guest signs.
+Hosts run each of these as a guest VM under a signed runner app whose App Attest key lives in the Mac's Secure Enclave. Before sending anything, the buyer's agent checks that attestation itself: the key is enrolled on chain, the runner build is approved, and the guest is the approved image. An agent called the amin matches requests to hosts and quotes terms. The guest's principal authorizes the price before use; the host is paid for the service delivered. The amin holds no money.
+
+## Prices and payment
+
+Each stay, fetch job or lease has a price payable by the guest to the host. Couch stays charge broker wallet credit for guest-signed usage, with a 60-second minimum and any quoted browsing surcharge. Fetch jobs and legacy leases hold souk credits and pay the host for verified service, returning the unused hold. Token-backed leases use LAYC in on-chain escrow on Base Sepolia, paying the host's operator against signed usage claims within the guest's authorized cap. These are separate balances; the accepted terms identify which one a deal uses. See [ARCHITECTURE.md](ARCHITECTURE.md) for the settlement paths.
 
 ## Try it
 
@@ -38,6 +42,6 @@ The VM runner, the broker and the contracts live in [amiller/dsmack](https://git
 
 ## Status
 
-Running on Base Sepolia (testnet), with Base mainnet next. The contracts are not externally audited. Today's supply is the team's Macs, so a request may still find no host; payment is souk dev credit, not money; and only a connection enrolls — shell and AI-plan offers are listed but not served yet. See [SECURITY.md](SECURITY.md) to report a problem.
+Running on Base Sepolia (testnet) and staging test credits, with Base mainnet next. Trial credits are not cash income: broker starter credit does not generate an on-chain host payout. Starter grants depend on funded pots and limits. Today's supply is the team's Macs, so a request may still find no host. Only connections enroll through the current host kit; shell and AI-plan offers are listed but not served yet. The contracts are not externally audited. See [SECURITY.md](SECURITY.md) to report a problem.
 
 Tests: `DSMACK=<dsmack checkout> ./test.sh`. MIT licensed.

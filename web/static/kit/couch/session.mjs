@@ -17,6 +17,25 @@ export async function privateDirectory(dir) {
     throw new Error("Session directory must be an owner-only directory (0700), not a symlink.");
 }
 
+// The CLI and MCP adapter preserve the complete accepted quote, rejecting unknown constraints.
+export function openArguments(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Arguments must be a JSON object.");
+  if (typeof args.publisher !== "string" || !Number.isInteger(args.slot_id) || typeof args.conversation_id !== "string")
+    throw new Error("open needs publisher, slot_id and conversation_id from the accepted proposal.");
+  if (Object.keys(args).some(key => !["publisher", "slot_id", "conversation_id", "browse", "max_spend_nano_usd", "operation_id", "expected_rate_nano_usd_per_second"].includes(key)))
+    throw new Error("Unsupported open constraint; use the exact accepted quote fields.");
+  const capped = args.max_spend_nano_usd !== undefined || args.operation_id !== undefined;
+  if (capped && !(typeof args.max_spend_nano_usd === "string" && /^[1-9][0-9]{0,38}$/.test(args.max_spend_nano_usd) &&
+    typeof args.operation_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(args.operation_id)))
+    throw new Error("Spend cap needs positive decimal max_spend_nano_usd and operation_id UUID.");
+  const rate = args.expected_rate_nano_usd_per_second;
+  if (rate !== undefined && !(typeof rate === "string" && /^[1-9][0-9]{0,38}$/.test(rate)))
+    throw new Error("Expected rate must be a positive decimal nano-USD string.");
+  return { publisher: args.publisher, slotId: args.slot_id, conversationId: args.conversation_id, browse: args.browse,
+    ...(capped ? { maxSpendNanoUsd: args.max_spend_nano_usd, operationId: args.operation_id } : {}),
+    ...(rate === undefined ? {} : { expectedRateNanoUsdPerSecond: rate }) };
+}
+
 export function controller(stay, tools) {
   let queue = Promise.resolve(), closed = false;
   return (action, args = {}) => {
@@ -25,16 +44,7 @@ export function controller(stay, tools) {
         if (closed) throw new Error("This session owner has closed; open a new session.");
         if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Arguments must be a JSON object.");
         if (action === "open") {
-          if (typeof args.publisher !== "string" || !Number.isInteger(args.slot_id) || typeof args.conversation_id !== "string")
-            throw new Error("open needs publisher, slot_id and conversation_id from the accepted proposal.");
-          if (Object.keys(args).some(key => !["publisher", "slot_id", "conversation_id", "browse", "max_spend_nano_usd", "operation_id"].includes(key)))
-            throw new Error("Unsupported open constraint; only publisher, slot_id, conversation_id, browse and the paired spend cap/operation UUID are supported.");
-          const capped = args.max_spend_nano_usd !== undefined || args.operation_id !== undefined;
-          if (capped && !(typeof args.max_spend_nano_usd === "string" && /^[1-9][0-9]{0,38}$/.test(args.max_spend_nano_usd) &&
-            typeof args.operation_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(args.operation_id)))
-            throw new Error("Spend cap needs positive decimal max_spend_nano_usd and operation_id UUID.");
-          const opened = await stay.open({ publisher: args.publisher, slotId: args.slot_id, conversationId: args.conversation_id, browse: args.browse,
-            ...(capped ? { maxSpendNanoUsd: args.max_spend_nano_usd, operationId: args.operation_id } : {}) });
+          const opened = await stay.open(openArguments(args));
           const actual = opened.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
           if (JSON.stringify(actual) !== JSON.stringify(tools)) {
             await stay.close();

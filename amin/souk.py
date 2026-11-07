@@ -1,4 +1,4 @@
-"""IP souk: the amin matches Mac Mini lines with buyers; README.md describes the mechanism."""
+"""Layover matching and settlement; see README.md."""
 
 import json
 import re
@@ -76,6 +76,8 @@ CHAIN_READS = {
 }
 COUCH_RATE = 15000  # nano-USD per active guest second: the broker's posted S1 rate, which the broker charges
 COUCH_MAX_MINUTES = 60  # a broker grant lasts at most an hour
+COUCH_CAP = "max_spend_nano_usd"
+COUCH_HOST = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}")
 SESSION = re.compile(r"^stay\s+(\{.*\})\s*$", re.S)
 STARTER = 50  # credits a new buyer gets from the sponsors' starter pot ($0.50)
 STARTER_POOL = "starter"
@@ -92,8 +94,7 @@ def on_event(e, s):
         return [
             reply(
                 e.sender,
-                f"The IP souk could not read your message ({type(error).__name__}: "
-                f"{error}). souk_guide shows the expected kinds and JSON.",
+                f"Unreadable message ({type(error).__name__}: {error}); see souk_guide.",
             )
         ]
 
@@ -147,6 +148,8 @@ def handle(e, s):
             return bounty_named(e, t, s)
         if k == "couch" and t.flag("accepted") and SESSION.match(e.text):
             return stay_settled(e, t, s)
+        if k == "couch" and t.flag("accepted") and e.text.strip() == "open":
+            return [store(e), post(t, "Settled; request a new stay." if t.flag("settled") else stay_notice(t))]
         if t.flag("agreed") and not t.flag("accepted"):
             return escrow_reply(e, t, s)
         return [*clear(t, "fresh:"), store(e), *listing_record(t, s), amin(t)]
@@ -208,6 +211,8 @@ def handle(e, s):
             return []
         if k == "couch":
             if e.value == "accept" and not q["expired"]:
+                if COUCH_CAP not in t.record("terms"):
+                    return [t.set_flag("closed"), post(t, "Uncapped quote; request a new stay.")]
                 return [t.set_flag("accepted"), post(t, stay_notice(t))]
             return [t.set_flag("closed"), post(t, "The terms were declined or expired.")]
         if e.value == "accept" and not q["expired"]:
@@ -225,9 +230,9 @@ def handle(e, s):
 def conflict(t, s):
     x = t.record("terms")
     if x["line"] not in lines(s):
-        return f"Line {x['line']} was withdrawn, superseded or delisted by QA before the deal started; nothing was held. Send a new request."
+        return f"Line {x['line']} is withdrawn, superseded or delisted; nothing was held. Request again."
     if busy(s, x["agent_id"], x["domains"], t.id, x["exclusive"]):
-        return "Another accepted deal on this line now holds one of these domains, so these terms conflict; nothing was held. Send a new request."
+        return "Another accepted deal holds one of these domains; nothing was held. Request again."
     return None
 
 
@@ -240,19 +245,18 @@ def escrow_terms(t, line, mode, per_gb, price, minutes):
 
 
 def escrow_card(e):
-    return (f"Escrow (GuestEscrow {GUEST_ESCROW} on Base Sepolia, chain {CHAIN_ID}, in LAYC {LAYC}, 1 LAYC = 10^6 units): termsHash {e['terms_hash']}, "
-            f"operator {e['operator']}, cap {e['cap']}, deposit {e['deposit']}. termsHash is keccak256 of these terms' canonical JSON (sorted keys, no spaces): {e['terms']}")
+    return (f"GuestEscrow {GUEST_ESCROW}, Base Sepolia {CHAIN_ID}, LAYC {LAYC} (10^6 units/LAYC): termsHash {e['terms_hash']}, "
+            f"operator {e['operator']}, cap {e['cap']}, deposit {e['deposit']}. termsHash = keccak256 of canonical JSON (sorted keys, no spaces): {e['terms']}")
 
 
 def escrow_notice(t):
     e = t.record("terms")["escrow"]
-    return (f"Agreed; nothing is held in the souk. Deposit at least the cap and accept the terms on GuestEscrow from your wallet:\n"
+    return (f"Agreed; no souk hold. Fund and accept GuestEscrow terms from your wallet:\n"
             f"account accept {e['terms_hash']} {e['operator']} {e['cap']} {e['deposit']}\n"
-            f"(or deposit and acceptTerms({e['terms_hash']}, {e['operator']}, {e['cap']}) from your own wallet). Run `resip verify {RESIP} {t.record('terms')['agent_id']} DIR` "
-            f"and `resip account DIR`, then send `accepted {e['terms_hash']} <your wallet address> <the account id resip printed>` here: the amin counts only leases that account posts. "
-            "The amin then reads the escrow on chain, and keeps checking for ten minutes, until the terms are there and your escrow balance covers all your accepted caps. "
-            "GuestEscrow pays the host's claims only from that balance. Anything above your accepted caps not yet claimed is withdrawable at any time, and closeTerms "
-            "ends these terms, after which the host's guest has one day to claim what the lease used.")
+            f"Run `resip verify {RESIP} {t.record('terms')['agent_id']} DIR` and `resip account DIR`; send "
+            f"`accepted {e['terms_hash']} <wallet address> <resip account id>`. Only that account's leases count. "
+            "The amin checks on chain for ten minutes: your balance must cover all accepted caps. GuestEscrow pays host claims from that balance. "
+            "Funds above unclaimed caps are withdrawable; closeTerms ends terms with one day for the guest to claim usage.")
 
 
 def escrow_reply(e, t, s):
@@ -339,12 +343,11 @@ def escrow_admit(e, t, s):
     mode = "exclusive" if x["exclusive"] else "shared"
     return [*([allocation_contract(t, "ready", wallet=wallet)] if t.data.get("allocate") else []), t.set_flag("accepted"), store(dict(text="Lease lookup: " + lease_url(t))),
             set_timer(e.at + ESCROW_START_SECONDS, "escrow_unstarted", thread=t.id), set_timer(e.at + ESCROW_POLL_SECONDS, "escrow_poll", thread=t.id), post(t, (
-        f"GuestEscrow holds these terms for {wallet} at block {terms['block']}, and your balance of {balance} covers your exposure of {exposure} at block {bal['block']} "
-        f"(read through layover-chain, Helios-verified). Create the {mode} lease on the line (after `resip verify {RESIP} {x['agent_id']} DIR` and `resip account DIR`):\n"
+        f"GuestEscrow terms verified for {wallet} at block {terms['block']}; balance {balance} covers exposure {exposure} at block {bal['block']} (Helios via layover-chain). "
+        f"After `resip verify {RESIP} {x['agent_id']} DIR` and `resip account DIR`:\n"
         f"resip lease DIR {','.join(x['domains'])} {x['category']} {mode} {x['minutes']} {x['price_per_gb']} {x['price']} --buyer-wallet={wallet} --terms-hash={h} --escrow={GUEST_ESCROW}\n"
-        f"The line's guest bills the lease's bytes at {x['price_per_gb']} cents per GB and claims it from GuestEscrow against its signed statement, never more than the cap of "
-        f"{x['escrow']['cap']} LAYC units. The souk holds and settles nothing for this lease. The amin finds the lease by its termsHash at {lease_url(t)}: "
-        f"the deal ends here {x['minutes']} minutes after the line starts it (or in an hour if no lease starts)."))]
+        f"The guest claims signed usage at {x['price_per_gb']} cents/GB from GuestEscrow, capped at {x['escrow']['cap']} LAYC units; no souk settlement. "
+        f"Lease lookup: {lease_url(t)}. Ends here {x['minutes']} minutes after starting, or in an hour if unstarted."))]
 
 
 def lease_url(t):
@@ -370,8 +373,7 @@ def escrow_end(t, why):
     m = t.record("terms")["minutes"]
     said = {"escrow_end": f"This lease's {m} minutes are over", "escrow_unstarted": "No lease started within an hour of admission",
             "escrow_ended": "The line ended the lease"}[why]
-    return [t.set_flag("settled"), post(t, f"{said}; the deal is closed here and the line is free for other leases. "
-                                           "GuestEscrow pays the host's claims from your balance, never more than the cap.")]
+    return [t.set_flag("settled"), post(t, f"{said}; closed here, line released. GuestEscrow pays host claims from your balance within the cap.")]
 
 
 def keccak256(text):
@@ -419,7 +421,10 @@ def top_level(e, s):
     elif e.kind == "fetch":
         data = dict(kind="fetch", request=fetch_request(d))
     elif e.kind == "couch":
-        data = dict(kind="couch", request=couch_request(d))
+        # Stable across replay/repeated instructions, unique to this souk's request event; never regenerated on retry.
+        h = keccak256(json.dumps(["layover-couch/1", e.souk, e.id]))
+        op = f"{h[:8]}-{h[8:12]}-8{h[13:16]}-{(int(h[16], 16) & 3) | 8:x}{h[17:20]}-{h[20:32]}"
+        data = dict(kind="couch", request=couch_request(d), operation_id=op)
     else:
         data = dict(kind="lease", request=lease_request(d))
     return [open_thread(e, members=[e.sender], data=data)]
@@ -477,9 +482,11 @@ def fetch_price(pages):
 
 
 def couch_request(d):
+    if not isinstance(d, dict) or set(d) - {"task", "minutes", "browse", COUCH_CAP, "duration_s", "start", "interruptible", "needs_perks"}:
+        raise ValueError("Unsupported couch constraint")
     task = str(d["task"]).strip()
     if not task or len(task) > 500:
-        raise ValueError("task must be a nonempty description of at most 500 characters")
+        raise ValueError("task needs 1 to 500 characters")
     if not 1 <= nat(d["minutes"]) <= COUCH_MAX_MINUTES:
         raise ValueError(f"minutes must be 1 to {COUCH_MAX_MINUTES}")
     perks = d.get("needs_perks") or []
@@ -489,10 +496,29 @@ def couch_request(d):
         epoch(str(d["start"]))  # a start, if sent, is a UTC timestamp
     if type(d.get("interruptible", False)) is not bool:
         raise ValueError("interruptible must be true or false")
-    return dict(task=task, minutes=d["minutes"], duration_s=nat(d.get("duration_s", d["minutes"] * 60)), start=d.get("start"),
-                needs_perks=[x.strip() for x in perks], interruptible=d.get("interruptible", False))
+    out = dict(task=task, minutes=d["minutes"], duration_s=nat(d.get("duration_s", d["minutes"] * 60)), start=d.get("start"),
+               needs_perks=[x.strip() for x in perks], interruptible=d.get("interruptible", False))
+    if "browse" in d:
+        out["browse"] = couch_browse(d["browse"])
+    if COUCH_CAP in d:
+        cap = d[COUCH_CAP]
+        if not isinstance(cap, str) or not re.fullmatch("[1-9][0-9]{0,38}", cap):
+            raise ValueError("max_spend_nano_usd must be a positive decimal string")
+        out[COUCH_CAP] = cap
+    return out
 
 
+def couch_browse(b):
+    if not isinstance(b, dict) or set(b) != {"mode", "hosts"} or b["mode"] not in ("none", "named", "open") or not isinstance(b["hosts"], list) or len(b["hosts"]) > 64 or (b["mode"] != "named" and b["hosts"]) or any(not isinstance(h, str) or not COUCH_HOST.fullmatch(h) for h in b["hosts"]):
+        raise ValueError("browse needs mode none|named|open and lowercase hosts (named only)")
+    return dict(mode=b["mode"], hosts=sorted(set(b["hosts"])))
+
+
+def couch_price(x):
+    cap = int(x[COUCH_CAP])
+    usd = f"{cap // 10**9}.{cap % 10**9:09d}".rstrip("0").rstrip(".")
+    return (f"Maximum {cap} nano-USD (${usd}): {x['minutes']} active minutes at {x['rate_nano_usd_per_second']} nano-USD/s, "
+            f"60 s minimum; browse {json.dumps(x['browse_terms'])}. Model calls extra; cap is not a wall-time deadline.")
 # Issue #153: a host level's card carries the fields that decide fit; the level's name never does.
 def fits(card, request):
     availability = card.get("availability") or {}
@@ -602,8 +628,7 @@ def fetch_offer(t, s, d, at):
         a = v["attested"]["coarse"]
         q = (f"Fetch job on line {k} ({v['agent_id']}): {a['region']}, {a['isp_class']}, residential {a['residential']} (attested, verified in this run); "
              f"{v['policy']['address']} address. Owner's notes: {v['policy']['notes'] or 'none'}. Owner-reported: {json.dumps(v['owner_reported'])}. {req['pages']} pages on "
-             f"{', '.join(req['domains'])}, GET only, {price} credits (${price / 100:.2f}). You pay only for pages served (status 2xx in the line's signed result); "
-             "on acceptance the souk program holds the price in souk credits.")
+             f"{', '.join(req['domains'])}, GET only, {price} credits (${price / 100:.2f}). Acceptance holds souk credits; pay only for signed 2xx pages.")
         return [call("record", thread=t.id, finding="terms", state="proposed", reason="posted rate, line verified in this run", line=k, domains=req["domains"], pages=req["pages"],
                      price=price, exclusive=False, seller=v["owner"], agent_id=v["agent_id"], basis="shared"),
                 call("propose", thread=t.id, members=[t.opener], question=carded(q, s, t, v["agent_id"]), options=["accept", "decline"], until=t.created_at + ACCEPT_SECONDS, proposal_id=t.id + ":proposal")]
@@ -612,35 +637,33 @@ def fetch_offer(t, s, d, at):
 
 def hold_notice(t):
     x = t.record("terms")
-    held = f"Escrow: {x['price']} credits (${x['price'] / 100:.2f} at 100 credits = $1) are held for this"
+    held = f"Escrow: {x['price']} credits (${x['price'] / 100:.2f}, 100 credits = $1) held for this"
     if t.data["kind"] == "fetch":
         return (
-            f"{held} fetch job of {x['pages']} pages. Write the page URLs "
-            f"(https, GET only, on {', '.join(x['domains'])}) one per line into a file URLS, {x['pages']} lines (repeat a URL to fetch it again). "
-            f"Then, after `resip verify {RESIP} {x['agent_id']} DIR`, post the job to the line:\n"
+            f"{held} fetch job. File URLS: {x['pages']} lines, one HTTPS GET URL each on {', '.join(x['domains'])}; repeats allowed. "
+            f"After `resip verify {RESIP} {x['agent_id']} DIR`:\n"
             f"resip bounty DIR {t.id} URLS {x['price']}\n"
-            f"and send `bounty <bounty id>` here when it prints the pages. The program settles when the site reports the job done: the seller gets "
-            f"{x['price']} credits × pages served (2xx in the line's signed result, at most {x['pages']}) / {x['pages']}, rounded, and nothing if its attestation fails; you get the rest. "
-            "A declined or expired bounty returns the whole hold."
+            f"Send `bounty <bounty id>` here. On completion, seller gets {x['price']} credits × signed 2xx pages (at most {x['pages']}) / {x['pages']}, rounded; "
+            "zero if attestation fails. Buyer gets the rest, or all if declined or expired."
         )
     mode = "exclusive" if x["exclusive"] else "shared"
     return (
-        f"{held} lease. Now create the {mode} lease on the line with the resip CLI "
-        f"(after `resip verify {RESIP} {x['agent_id']} DIR` and `resip account DIR`):\n"
+        f"{held} lease. After `resip verify {RESIP} {x['agent_id']} DIR` and `resip account DIR`:\n"
         f"resip lease DIR {','.join(x['domains'])} {x['category']} {mode} {x['minutes']} {x['price_per_gb']} {x['price']}\n"
-        "Then send the lease id in this thread, and run `resip proxy DIR <lease id> PORT` for a local proxy on PORT. The amin settles from the site's statement when the lease ends: "
-        f"the seller gets the lease's bytes (up and down, from the line's signed statement) × {x['price_per_gb']} credits per GB, rounded up to a whole credit, at most the {x['price']} held, "
-        "and you get the rest back."
+        "Send the lease id here; run `resip proxy DIR <lease id> PORT` for a local proxy. At lease end, seller gets signed bytes (up + down) "
+        f"× {x['price_per_gb']} credits/GB, rounded up, capped at {x['price']}; buyer gets the rest."
     )
 
 
 def stay_notice(t):
     x = t.record("terms")
+    if COUCH_CAP not in x:
+        return "Uncapped quote; request a new stay."
     return (
-        f"Accepted. Nothing is held here: you pay the stay on the dsmack broker from your wallet's credit, at the broker's rate of {COUCH_RATE} nano-USD "
-        f"per active guest second (${COUCH_RATE * 60 / 1e9:.4f} per minute, 60 s minimum). Open it with the couch MCP tool:\n"
-        "stay_open " + json.dumps(dict(publisher=x["publisher"], slot_id=x["slot_id"], conversation_id=t.id)) + "\n"
-        f"Work in it, then call stay_close and send its JSON here as `stay <json>`. That is the stay's settlement record."
+        "Accepted. Your broker wallet pays; no souk credit is held. " + couch_price(x) + "\n"
+        "stay_open " + json.dumps(dict(publisher=x["publisher"], slot_id=x["slot_id"], conversation_id=t.id, browse=x["browse_terms"],
+                                       max_spend_nano_usd=x[COUCH_CAP], operation_id=x["operation_id"], expected_rate_nano_usd_per_second=str(x["rate_nano_usd_per_second"]))) + "\n"
+        "After uncertain opens, reuse these arguments; `open` repeats them. Close; report `stay <stay_close JSON>`."
     )
 
 
@@ -649,19 +672,22 @@ def stay_settled(e, t, s):
         return [store(e), post(t, "This stay's settlement is already recorded.")]
     r, x = json.loads(SESSION.match(e.text).group(1)), t.record("terms")
     placement, used, rate, charged = r["placement"], nat(r["guestSeconds"]), int(r["rateNanoUsdPerSecond"]), int(r["chargedNanoUsd"])
-    posted = COUCH_RATE + browse_rate(x.get("browse"), r.get("browse"))
+    capped = COUCH_CAP in x
+    posted = x["rate_nano_usd_per_second"] if capped else COUCH_RATE + browse_rate(x.get("browse"), r.get("browse"))
     why = ("sessionId is not a broker session id" if not re.fullmatch("[0-9a-f]{32}", r["sessionId"])
-           else f"it ran on slot {placement['slot_id']} of {placement['publisher']}, not the agreed slot {x['slot_id']} of {x['publisher']}"
+           else "its placement is not the agreed slot"
            if (placement["publisher"].lower(), placement["slot_id"]) != (x["publisher"].lower(), x["slot_id"])
            else f"its rate is {rate}, not the posted {posted}" if rate != posted
-           else f"{charged} nano-USD is not the broker's charge for {used} guest seconds ({max(60, used) * posted})" if charged != max(60, used) * posted
+           else "its browsing differs from the accepted terms" if capped and {k: (r.get("browse") or {}).get(k) for k in ("mode", "hosts")} != x["browse_terms"]
+           else "its charge exceeds the accepted spending cap" if capped and charged > int(x[COUCH_CAP])
+           else f"not the broker's charge: expected {max(60, used) * posted} nano-USD" if charged != max(60, used) * posted
            else None)
     if why:
-        return [store(e), post(t, f"That stay record does not settle these terms: {why}. Send the stay_close JSON of the agreed stay.")]
+        return [store(e), post(t, f"Stay record refused: {why}. Send the agreed stay_close JSON.")]
     return [store(e), t.set_flag("settled"), post(t, (
-        f"Stay {r['sessionId']} on slot {x['slot_id']} of {x['publisher']}: {used} active guest seconds, {charged} nano-USD (${charged / 1e9:.4f}) charged by the "
-        f"broker to wallet {r['wallet']}, closed ({r['closedReason']}). This is the stay's settlement record, as reported from the broker's session view; "
-        f"the amin moved no money. Deposited credit accrues to the host's operator {r['operator']} on the broker's UsageEscrow; starter credit pays nothing on chain." + ask_buyer(t))),
+        f"Stay {r['sessionId']} on slot {x['slot_id']}: {used} active guest seconds, {charged} nano-USD (${charged / 1e9:.4f}) charged; "
+        f"wallet {r['wallet']}, operator {r['operator']}. Reported broker view ({r['closedReason']}); the amin moved no money. "
+        "Starter credit pays nothing on chain." + ask_buyer(t))),
         *ask_host(t, s)]
 
 
@@ -737,7 +763,7 @@ def qa_read(probes, t, s):
         return []
     fail = probe_failure(done[0], t.data["policy"]["address"])
     if status == "relisted" and fail:
-        return [line_status(t.opener, t.id, "delisted"), post(t, f"Line {t.id} is delisted by QA: the newest probe failed ({fail}). Buyers are not matched to it until a probe passes. Deals already accepted on it still settle.")]
+        return [line_status(t.opener, t.id, "delisted"), post(t, f"Line {t.id} is delisted by QA: the newest probe failed ({fail}). No new matches until a probe passes; accepted deals still settle.")]
     if status == "delisted" and not fail:
         return [line_status(t.opener, t.id, "relisted"), post(t, f"Line {t.id} is listed again: probe {done[0]['probe_id']} passed at {done[0]['report_at']}.")]
     return []
@@ -760,7 +786,7 @@ def refresh(t, s, d, at):
     x = dict(line, appraisal_id=a["id"], attested={k: a[k] for k in ("coarse", "asn", "bandwidth_mbps", "challenges", "at", "verified_by")},
              exclusive_basis=exclusive_basis(a["coarse"], line["owner_reported"]) if line["policy"]["exclusive"] else None)
     return [store(dict(sender=dict(person=line["owner"]), text=json.dumps(dict(kind="line", **x)), line=x), resident=True),
-            post(t, f"Line {t.id} now rests on appraisal {a['id']} ({a['at']}): {line['appraisal_id']} fails only its App Attest check (the runner key rotated).")]
+            post(t, f"Line {t.id} now rests on appraisal {a['id']} ({a['at']}): {line['appraisal_id']} failed only App Attest (key rotation).")]
 
 
 def line_status(owner, line, status, by=None):
@@ -771,7 +797,7 @@ def line_status(owner, line, status, by=None):
 def withdraw(e, t, s):
     if t.id not in enrolled(s):
         return [store(e), post(t, f"Line {t.id} is not an enrolled, active line; nothing to withdraw.")]
-    return [store(e), line_status(t.opener, t.id, "withdrawn"), post(t, f"Line {t.id} is withdrawn: buyers are no longer matched to it. Leases already accepted on it still settle.")]
+    return [store(e), line_status(t.opener, t.id, "withdrawn"), post(t, f"Line {t.id} is withdrawn: no new matches; accepted leases still settle.")]
 
 
 def epoch(iso):
@@ -791,9 +817,9 @@ def verified_url(appraisal_id):
 def unverified(t, line):
     if t.flag("fresh:" + line["appraisal_id"]):
         return (None if t.flag("fresh:live:" + line["agent_id"]) else f"Line {line['line']}'s guest has not polled the site within {LIVE_SECONDS} s of /api/market's `at`."
-                if t.flag("fresh:market") else "There is no /api/market read in this run (not fetched, or it failed).")
-    return (f"Line {line['line']} is not verified in this run: fetch {verified_url(line['appraisal_id'])} first. It must show pass true, "
-            f"guest_version {APPRAISAL_PIN[:8]} (the pinned minion) and an appraisal `at` at most {MAX_APPRAISAL_AGE // 86400} days old.")
+                if t.flag("fresh:market") else "There is no /api/market read in this run.")
+    return (f"Line {line['line']} is not verified in this run: fetch {verified_url(line['appraisal_id'])}. Require pass true, "
+            f"guest_version {APPRAISAL_PIN[:8]}, at most {MAX_APPRAISAL_AGE // 86400} days old.")
 
 
 def doc(result, o="{}"):
@@ -903,12 +929,12 @@ def bounty_settle(d, t, s, armed, source):
     why = (f"it is on {d['agent_id']}, not the agreed line {x['agent_id']}" if d["agent_id"] != x["agent_id"]
            else f"its key is {d['buyer_key']!r}, not this thread's id {t.id}" if d["buyer_key"] != t.id else None)
     if why:
-        return [t.clear_flag("bounty:" + bid), t.clear_flag("recheck_pending"), post(t, f"Bounty {bid} cannot settle this deal: {why}. Send the id of the job you posted for it.")]
+        return [t.clear_flag("bounty:" + bid), t.clear_flag("recheck_pending"), post(t, f"Bounty {bid} cannot settle this deal: {why}. Send the correct job id.")]
     hold = t.tool_fact("credits.hold")["hold"]
     if d["status"] in ("declined", "expired"):
-        return [t.set_flag("settled"), call("credits.release_hold", hold=hold), post(t, f"Bounty {bid} was {d['status']}; the whole hold of {x['price']} credits goes back to the buyer.")]
+        return [t.set_flag("settled"), call("credits.release_hold", hold=hold), post(t, f"Bounty {bid} was {d['status']}; all {x['price']} credits returned to buyer.")]
     if d["status"] != "done":
-        return armed + [post(t, f"Bounty {bid} is {d['status']}. The amin checks it every minute until it is done.")] * bool(armed)
+        return armed + [post(t, f"Bounty {bid} is {d['status']}; checking every minute.")] * bool(armed)
     served = min(d["served"], x["pages"])
     seller = (2 * x["price"] * served + x["pages"]) // (2 * x["pages"]) if d["attestation_pass"] is True else 0
     split = {k: v for k, v in {x["seller"]: seller, t.opener: x["price"] - seller}.items() if v}
@@ -947,7 +973,7 @@ def recorded(r, t, s, at):
             *(line_status(t.opener, x, "superseded", by=t.id) for x in old),
             store(dict(sender=dict(person=t.opener), text=json.dumps(dict(kind="line", **line)), line=line), resident=True),
             post(t, f"Enrolled line {t.id} ({a['agent_id']}); exclusive leases: {line['exclusive_basis'] or 'no'}."
-                    + (f" It supersedes line {', '.join(old)}: buyers are no longer matched to that line, and leases already accepted on it still settle." if old else "") + " Buyers can now be matched to it."),
+                    + (f" It supersedes line {', '.join(old)} for new matches; accepted leases still settle." if old else "")),
         ]
     if r["finding"] == "settle" and not t.flag("settled"):
         terms, hold = t.record("terms"), t.tool_fact("credits.hold")["hold"]
@@ -971,7 +997,7 @@ def starter_notice(e):
     # A private tool outcome reaches the buyer without a model run or a second payment attempt.
     return [reply(person, json.dumps(dict(kind="trial_credit", rail="souk", status=status, reason=reason,
         granted=amount if status == "ready" else None, unit="credits", products=["fetch_job", "lease"],
-        detail="Separate account LAYC and broker credit are unchanged; use the Credits row for your current souk balance.")))
+        detail="Account LAYC and broker credit unchanged. Souk balance: Credits row.")))
         for person, amount in e.args.get("payouts", {}).items()]
 
 
@@ -1063,12 +1089,12 @@ def guard_enroll(c, t, s):
     if a["pass"] is not True:
         return deny("The site's verification of this appraisal failed: " + "; ".join(x["name"] for x in a["checks"] if not x["pass"]))
     if not t.flag("fresh:" + a["id"]):
-        return deny(f"The appraisal is not from the pinned minion (guest_version {a['guest_version']}, pinned {APPRAISAL_PIN[:8]}) or is more than {MAX_APPRAISAL_AGE // 86400} days old (at {a['at']}).")
+        return deny(f"Appraisal not from the pinned minion ({a['guest_version']} vs {APPRAISAL_PIN[:8]}) or over {MAX_APPRAISAL_AGE // 86400} days old ({a['at']}).")
     r = next((d for d in pages(t) if d.get("id") == a["request_id"] and "requested_by" in d), None)
     if not r:
         return deny(f"Fetch the appraisal request {RESIP}/api/appraisal-requests/{a['request_id']} too.")
     if r["requested_by"] != t.opener:
-        return deny("This appraisal was requested by someone else; request your own with your person id as requested_by.")
+        return deny("Appraisal requested by someone else; use your person id as requested_by.")
     if any(v["agent_id"] == a["agent_id"] and v["owner"] != t.opener for v in enrolled(s).values()):
         return deny(f"{a['agent_id']} is already enrolled by another member.")
     return allow()
@@ -1082,7 +1108,7 @@ def guard_terms(c, t, s):
         return guard_couch_terms(a, t, req)
     line = lines(s).get(a.get("line")) if isinstance(a.get("line"), str) else None
     if not line:
-        return deny("Name an enrolled line by its id (a string such as \"thread-45\").")
+        return deny("Name an enrolled line by its id (string).")
     if unverified(t, line):
         return deny(unverified(t, line))
     p = line["policy"]
@@ -1116,13 +1142,24 @@ def guard_couch_terms(a, t, req):
         return deny(f"Fetch {FLEET_URL} in this run first.")
     slot = fleet_slot(t, a.get("publisher"), a.get("slot_id"))
     if not slot:
-        return deny(f"Slot {a.get('slot_id')!r} of {a.get('publisher')!r} is not a ready, verified slot of an online Mac in this run's {FLEET_URL}.")
+        return deny("Slot is not a ready, verified slot of an online Mac.")
     if not fits(slot, req):
-        return deny(f"Slot {a.get('slot_id')!r} of {a.get('publisher')!r} does not fit this stay: its level card fails the request's stay length, open window, interruptibility or perks.")
+        return deny("Slot does not fit this stay: duration, window, interruptibility or perks.")
     minutes = a.get("minutes")
-    if not isinstance(minutes, int) or not 1 <= minutes <= req["minutes"]:
-        return deny(f"minutes must be an integer from 1 to the {req['minutes']} the guest asked for.")
-    fixed = dict(publisher=a["publisher"].lower(), rate_nano_usd_per_second=COUCH_RATE, browse=slot.get("browse"), task=req["task"], state="proposed")
+    if type(minutes) is not int or not 1 <= minutes <= req["minutes"]:
+        return deny(f"minutes must be an integer from 1 to {req['minutes']}.")
+    try:
+        policy = slot.get("browse") or {"default": "none"}
+        browse = couch_browse(req.get("browse", dict(mode=policy["default"], hosts=[])))
+        rate = COUCH_RATE + nat(browse_rate(policy, browse))
+        cap = max(60, minutes * 60) * rate
+        op = t.data["operation_id"]
+        if rate > 2**53 - 1 or cap > int(req.get(COUCH_CAP, str(cap))):
+            return deny("Quote exceeds the request's cap or rate bounds.")
+    except (ValueError, KeyError, TypeError) as error:
+        return deny(f"Capped quote refused: {error}.")
+    fixed = dict(publisher=a["publisher"].lower(), rate_nano_usd_per_second=rate, browse=slot.get("browse"), browse_terms=browse,
+                 max_spend_nano_usd=str(cap), operation_id=op, task=req["task"], state="proposed")
     if any(a.get(k) != v for k, v in fixed.items()):
         return modify(**{**a, **fixed})
     return allow()
@@ -1142,9 +1179,11 @@ def guard_propose(c, t, s):
         return deny("Record the terms in an open lease, fetch or couch thread first.")
     if s.questions(t.id):
         return deny("These terms are already proposed.")
+    if t.data["kind"] == "couch" and COUCH_CAP not in t.record("terms"):
+        return deny("Record capped couch terms first.")
     line = t.data["kind"] == "couch" or lines(s).get(t.record("terms")["line"])
     if not line:
-        return deny(f"Line {t.record('terms')['line']} is no longer enrolled (superseded or withdrawn); record terms on an active line.")
+        return deny(f"Line {t.record('terms')['line']} is no longer enrolled; select an active line.")
     if line is not True and unverified(t, line):
         return deny(unverified(t, line))
     fixed = dict(members=[t.opener], options=["accept", "decline"], until=t.created_at + ACCEPT_SECONDS, proposal_id=t.id + ":proposal", question=carded(c.args.get("question", ""), s, t, host_subject(t)))
@@ -1155,7 +1194,7 @@ def guard_propose(c, t, s):
 
 def guard_settle(c, t, s):
     if t.flag("agreed"):
-        return deny("This lease is paid on GuestEscrow by the line's guest's signed claims; the souk settles nothing here.")
+        return deny("GuestEscrow pays signed guest claims; no souk settlement.")
     if not t.flag("accepted") or t.flag("settled") or not t.tool_fact("credits.hold"):
         return deny("Nothing is held here to settle.")
     # The record schema has no lease_id: the one statement fetched here names it.
@@ -1163,7 +1202,7 @@ def guard_settle(c, t, s):
     lease_id = c.args.get("lease_id") or (fetched[0] if len(fetched) == 1 else None)
     st = statement(t, lease_id) if lease_id else None
     if not st:
-        return deny(f"Fetch the lease's statement and pass lease_id to record (statements fetched in this thread: {', '.join(fetched) or 'none'}).")
+        return deny(f"Fetch the statement; record lease_id. Fetched: {', '.join(fetched) or 'none'}.")
     if settled_elsewhere(s, lease_id, t.id):
         return deny("That lease already settled another escrow.")
     terms = t.record("terms")
@@ -1171,7 +1210,7 @@ def guard_settle(c, t, s):
         return deny(f"That lease is on {st['agent_id']}, not the agreed line {terms['agent_id']}.")
     want = {"declined": "released", "ended": "settled"}.get(st["status"])
     if want is None:
-        return deny(f"The lease is {st['status']}; set a timer and fetch the statement again after it ends.")
+        return deny(f"Lease is {st['status']}; set a timer to fetch its ended statement.")
     fixed = dict(lease_id=lease_id, state=want)
     if any(c.args.get(k) != v for k, v in fixed.items()):
         return modify(**{**c.args, **fixed})
@@ -1208,25 +1247,24 @@ def reference_form(t):
 
 
 def ask_buyer(t):
-    return f" Leave the host a one-line reference (public on the host's profile; up true or false is optional): {reference_form(t)}"
+    return f" Leave the host a one-line reference (public; up is optional): {reference_form(t)}"
 
 
 def ask_host(t, s):
     host = parties(t, s)[1]
     if not host:
-        return [post(t, f"No member's bound wallet is the host's publisher address {t.record('terms')['publisher']}, so the host cannot leave a reference on this stay.")]
-    return [reply(host, f"Your {t.data['kind']} deal {t.id} settled. Leave the buyer a one-line reference (the amin reads it when matching them later; "
-                        f"up true or false is optional): {reference_form(t)}")]
+        return [post(t, f"No member's bound wallet is the host's publisher address {t.record('terms')['publisher']}; no host reference.")]
+    return [reply(host, f"Your {t.data['kind']} deal {t.id} settled. Leave a buyer reference for future matching (up optional): {reference_form(t)}")]
 
 
 def reference(e, s):
     d = json.loads(e.text)
     t = s.thread(str(d["deal"]))
     if not t or t.data["kind"] not in ("lease", "fetch", "couch") or not served(t):
-        return [reply(e.sender, f"Deal {d['deal']} is not a settled lease, fetch job or stay: references come after settlement, and not on a released hold.")]
+        return [reply(e.sender, f"Deal {d['deal']} is not a settled lease, fetch job or stay; released holds cannot have references.")]
     buyer, host = parties(t, s)
     if e.sender.person not in (buyer, host):
-        unbound = f" No member's bound wallet is this stay's publisher address {t.record('terms')['publisher']}: the host binds that wallet first." if host is None else ""
+        unbound = f" Publisher {t.record('terms')['publisher']}: the host binds that wallet first." if host is None else ""
         return [reply(e.sender, f"Only the buyer and the host of deal {t.id} leave references on it." + unbound)]
     if any(r["deal"] == t.id and r["author"] == e.sender.person for r in references(s)):
         return [reply(e.sender, f"You already left your reference on deal {t.id}; there is one per side.")]
@@ -1261,6 +1299,8 @@ def carded(q, s, t, subject):
             + "; ".join(json.dumps(r["text"]) + thumbs(r) for r in rs[-3:][::-1]) + "." if rs else f"References for {subject}: none yet.")
     x = t.record("terms")
     card += "\n\n" + escrow_card(x["escrow"]) if x and "escrow" in x else ""
+    if t.data["kind"] == "couch" and x and COUCH_CAP in x:
+        card += "\n\n" + couch_price(x) + " Accepting authorizes this maximum."
     return q if card in q else q + "\n\n" + card
 
 

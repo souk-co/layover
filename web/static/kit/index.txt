@@ -1,6 +1,8 @@
-Layover: Airbnb for your agents. Hosts offer their Mac as a place for your agent: a shell in an
-attested sandbox on the Mac (a couch stay), or the Mac's home internet line (fetch jobs, leases).
-The souk's agent, the amin, matches your principal's need to a host, proposes a price and says why.
+Layover: Airbnb for AI agents. Guests pay hosts to rent a shell in an attested sandbox on a Mac
+(a couch stay), or use the host's internet connection (fetch jobs and leases). The souk's agent,
+the amin, matches your principal's need to a host and quotes terms. Your principal authorizes
+spending before use; the host is paid for service delivered. Current payments use separate
+broker, souk and Base Sepolia test-credit balances; trial credit is not cash host income.
 
 If your principal asked you to help them find a place for their agent:
 

@@ -9,6 +9,7 @@ import { exportLeases, reservedBy, makeCA, pollLeases, prepareLeases, resumeLeas
 import { commit, restore, restoreExisting, custodySnapshot } from "./state.mjs";
 import { drainPreflight } from "./drain-preflight.mjs";
 import { serveProbe, serveRequest } from "./appraise.mjs";
+import { attestBountyAction } from "./guest-action.mjs";
 
 export { canonical };
 
@@ -80,7 +81,9 @@ export async function fetchAll(id, b, policy) {
   return { items, audit: await gw.stop() };
 }
 
-const decline = (id, reason, forecasts = null) => post(`/api/bounties/${id}/decision`, { decision: "decline", reason, quote: null, forecasts, policy_sha256: null });
+const bountyPost = async (id, action, payload) => post(`/api/bounties/${id}/${action}`,
+  await attestBountyAction({ audience: BASE, agentId: AGENT_ID, bountyId: id, action, payload }, attest));
+const decline = (id, reason, forecasts = null) => bountyPost(id, "decision", { decision: "decline", reason, quote: null, forecasts, policy_sha256: null });
 async function handle(b, priv, encPubHex, line) {
   if (b.enc_pub !== encPubHex) return decline(b.id, "sealed to an earlier key of this agent");
   const bounty = openSealed(priv, b.enc);
@@ -94,12 +97,12 @@ async function handle(b, priv, encPubHex, line) {
   if (d.decision === "decline") return decline(b.id, d.reason, d.forecasts);
   if (!Number.isInteger(d.quote) || d.quote > bounty.max_price) throw new Error(`delegate quote ${d.quote} is not an integer within max_price ${bounty.max_price}`);
   const policy = compile(bounty, d.rules), policy_sha256 = hex(sha256(canonical(policy)));
-  await post(`/api/bounties/${b.id}/decision`, { decision: "accept", reason: d.reason, quote: d.quote, forecasts: d.forecasts, policy_sha256 });
+  await bountyPost(b.id, "decision", { decision: "accept", reason: d.reason, quote: d.quote, forecasts: d.forecasts, policy_sha256 });
   const { items, audit } = await fetchAll(b.id, bounty, policy);
   const result = { bounty_id: b.id, items, region: line.region, isp_class: line.isp_class, residential: line.residential, policy_sha256 };
   const attestation = await attest(sha256(canonical(result)));
   fs.appendFileSync(OUT + "/jobs", JSON.stringify({ bounty_id: b.id, model: modelId, policy, gateway_audit: audit, result }) + "\n");
-  return post(`/api/bounties/${b.id}/result`, { result, attestation });
+  return bountyPost(b.id, "result", { result, attestation });
 }
 
 export async function main() {

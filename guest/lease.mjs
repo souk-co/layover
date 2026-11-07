@@ -6,6 +6,7 @@ import http from "node:http";
 import tls from "node:tls";
 import { Duplex } from "node:stream";
 import * as x509 from "@peculiar/x509";
+import { attestLeaseAction } from "./guest-action.mjs";
 import { AGENT_ID, BASE, CHAIN_ID, ESCROW, GUEST_ESCROW, OPERATOR, OUT, signGuestClaim, FETCH_HEADERS, MAX_RESPONSE, TRACE, attest, canonical, chain, complete, env, firstJson, num, headBytes, hex, json, log, post,
   record, runGateway, sha256, spend, traceRule, vantage, viaGateway, web, x25519Pub, x25519Raw, SYSTEM, openSealed } from "./core.mjs";
 
@@ -135,7 +136,11 @@ function leasePolicy(l) {
   return { rules: [...l.domains.flatMap((d) => [rule(d, d), rule("*." + d, d)]), traceRule(1000)] };
 }
 
-const decide = (id, body) => post(`/api/leases/${id}/decision`, { decision: "decline", price_per_gb: null, term_end: null, forecasts: null, policy_sha256: null, ...body });
+// Sign once before post(): the control gateway may retry the exact request after a
+// transient 5xx, and the site recognizes its nonce without applying it twice.
+const leasePost = async (id, action, payload) => post(`/api/leases/${id}/${action}`,
+  await attestLeaseAction({ audience: BASE, agentId: AGENT_ID, leaseId: id, action, payload }, attest));
+const decide = (id, body) => leasePost(id, "decision", { decision: "decline", price_per_gb: null, term_end: null, forecasts: null, policy_sha256: null, ...body });
 async function handleLease(s, ctx) {
   if (s.enc_pub !== ctx.encPubHex) return decide(s.id, { reason: "sealed to an earlier key of this agent" });
   const r = openSealed(ctx.priv, s.enc), terms = openSealed(ctx.priv, s.terms, "resip-lease-terms/1"), refused = precheckLease(r, terms.exclusive);
@@ -173,7 +178,7 @@ async function noteVantage(l, v) {
   l.lastVantage = Date.now();
   const at = record({ kind: "vantage", lease: l.id, ip_commit: v.ip_commit, asn: v.asn, same_ip: v.same_ip, same_asn: v.same_asn }).entry.at;
   l.vantage.push({ at, ip_commit: v.ip_commit, asn: v.asn });
-  await post(`/api/leases/${l.id}/vantage`, { at, ip_commit: v.ip_commit, asn: v.asn, same_ip: v.same_ip, same_asn: v.same_asn });
+  await leasePost(l.id, "vantage", { at, ip_commit: v.ip_commit, asn: v.asn, same_ip: v.same_ip, same_asn: v.same_asn });
   return v.same_ip && v.same_asn;
 }
 
@@ -231,7 +236,7 @@ async function end(l, reason) {
   const attestation = await attest(sha256(canonical(statement)));
   // The holder gets its own entries in full and every other entry as a digest, enough to recompute end_head.
   const receipts = { start_prev_head: l.startPrev, rows: rows.map((r) => ({ seq: r.entry.seq, digest: r.digest, entry: r.entry.lease === l.id ? r.entry : null })) };
-  await post(`/api/leases/${l.id}/end`, { end_reason: reason, statement, attestation, receipts_enc: sealTo(l.reply_pub, receipts) });
+  await leasePost(l.id, "end", { end_reason: reason, statement, attestation, receipts_enc: sealTo(l.reply_pub, receipts) });
   if (reason === "term ended") holds.push({ lease_id: l.id, token: l.token, domains: l.domains, exclusive: l.exclusive, price: l.price, until: Date.now() + GRACE_MS });
   log("lease", l.id, "ended:", reason, "exclusive:", exclusive, "shared_with:", l.peers.length, "requests:", reqs.length);
 }
@@ -270,7 +275,7 @@ export async function pollLeases(ctx) {
     if (!l) {
       // Decided by an earlier boot that did not end it (a crash): this boot has no log for it and says so, signed.
       const statement = { kind: "layover-lease-statement/2", agent_id: AGENT_ID, lease_id: s.id, end_reason: "guest restarted without ending the lease; no log covers it", exclusive: null };
-      await post(`/api/leases/${s.id}/end`, { end_reason: statement.end_reason, statement, attestation: await attest(sha256(canonical(statement))), receipts_enc: null });
+      await leasePost(s.id, "end", { end_reason: statement.end_reason, statement, attestation: await attest(sha256(canonical(statement))), receipts_enc: null });
       continue;
     }
     if (!l.active) continue;

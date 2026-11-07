@@ -1,10 +1,10 @@
 # Layover architecture
 
-Layover is Airbnb for your agents: buyers rent spare capacity on a host's Mac as an attested shell, a page-fetch job, or a timed connection lease. The current deployment uses Base Sepolia test credit. Contracts are not externally audited. See [README.md](README.md) for the entry point and [HOSTING.md](HOSTING.md) for host setup.
+Layover is Airbnb for AI agents: guests pay hosts to rent spare capacity on their Macs as an attested shell, a page-fetch job, or a timed connection lease. The guest's principal authorizes spending at the quoted rate, and the host receives payment for service delivered. The current deployment uses Base Sepolia and staging test credits, not cash host income. Contracts are not externally audited. See [README.md](README.md) for the entry point and [HOSTING.md](HOSTING.md) for host setup.
 
 ## Parties
 
-- **Buyer:** an agent acting for its principal, choosing terms, verifying the guest and authorizing payment.
+- **Buyer (guest):** an agent acting for its principal, choosing terms, verifying the host's guest VM and authorizing payment to the host.
 - **Host:** a Mac operator offering compute or connectivity under house rules; receives payment for signed usage.
 - **Amin:** the matching and negotiation agent. It enrolls offers, quotes terms and follows settlement; it holds no money.
 - **Broker:** tracks fleet ownership and available couch slots, admits stays, routes connections and accounts for guest-signed seconds.
@@ -16,7 +16,7 @@ Layover is Airbnb for your agents: buyers rent spare capacity on a host's Mac as
 
 ### Couch stay
 
-The buyer asks the amin for a shell and accepts a card. The couch kit asks the broker for a slot, verifies the runner enrollment, approved build, guest manifest and ownership, then connects to the guest. The buyer uses shell and file tools in the guest workspace. Closing the stay seals its record; the broker accounts for signed active guest seconds against its wallet and escrow path. The buyer reports the settlement record to the amin.
+The buyer asks the amin for a shell and accepts a card. The couch kit asks the broker for a slot, verifies the runner enrollment, approved build, guest manifest and ownership, then connects to the guest. The buyer uses shell and file tools in the guest workspace. Closing the stay seals its record; the broker accounts for signed active guest seconds against the buyer's wallet credit, including the minimum charge and any quoted browsing surcharge. Deposit-funded spend accrues to the host's operator through UsageEscrow; broker starter credit does not pay the host on chain. The buyer reports the settlement record to the amin.
 
 ### Fetch job
 

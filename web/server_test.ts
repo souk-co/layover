@@ -1,6 +1,7 @@
 // deno test -A --no-check web/server_test.ts (verify.ts has pre-existing type errors)
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
 import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
+import { fixture as actionFixture, agentId as actionAgentId, resourceId as actionId, registrationQuote, F as actionFacts } from "./guest-action_fixture.ts";
 
 Deno.test("a probe request unanswered for 10 minutes after filing is expired, pass false; a newer one stays open", async () => {
   const dataDir = await Deno.makeTempDir(), ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -18,25 +19,77 @@ Deno.test("a registration is recorded only if it verifies and comes from a runne
   const dataDir = await Deno.makeTempDir(), bound: Record<string, string | null> = { host: "0xop1", fresh: null, "test-x": null };
   const custody = Deno.serve({ port: 0, onListen() {} }, (req) => Response.json({ allowed: null, operator: bound[new URL(req.url).pathname.slice(1)] }));
   const links: Record<string, string[]> = { ["aa".repeat(32)]: ["0xop1"], ["a2".repeat(32)]: ["0xop1"], ["bb".repeat(32)]: ["0xop2"] };
-  // A stand-in verifier: the attestation hex is "<01 verified | 00 not>ff<key_id>".
+  // Decodable quotes with an injected hardware verdict; replay identities still use the real decoder.
+  const quotes = new Map<string, { ok: boolean; key_id: string }>();
+  const quote = (ok: boolean, key_id: string) => {
+    const att = registrationQuote({ ...actionFacts, key_id }, new Uint8Array(64), [Number(ok)]);
+    quotes.set(att, { ok, key_id }); return att;
+  };
   configure({ custody: `http://127.0.0.1:${custody.addr.port}/`, operators: async (kid: string) => links[kid] ?? [], verify: (async (att: string) => {
-    const [ok, key_id] = att.split("ff");
-    return { ok: ok === "01", mode: null, facts: { key_id, manifest_sha256: "22".repeat(32), os_image_hash: "11".repeat(32), run: "33".repeat(32) },
-      checks: [{ name: "App Attest", ok: ok === "01", detail: "stub" }], checked_at: "" };
+    const { ok, key_id } = quotes.get(att)!;
+    return { ok, mode: null, facts: { ...actionFacts, key_id },
+      checks: [{ name: "App Attest", ok, detail: "stub" }], checked_at: "" };
   }) as never });
   const register = async (agent_id: string, attestation: string, dir = dataDir) => {
     const r = await handler(new Request("http://x/api/agents", { method: "POST", body: JSON.stringify({ agent_id, enc_pub: "77".repeat(32), attestation,
       coarse: { region: "r", isp_class: "c", residential: true } }) }), { dataDir: dir });
     return [r.status, (await r.json()).error ?? null];
   };
-  assertEquals(await register("host", "00ff" + "aa".repeat(32)), [400, "registration attestation did not verify: App Attest (stub)"]);
-  assertEquals(await register("host", "01ff" + "bb".repeat(32)), [409, `agent_id host is bound to operator 0xop1; runner key ${"bb".repeat(32)} is not linked to it`]);
-  assertEquals((await register("fresh", "01ff" + "bb".repeat(32)))[0], 409);
+  assertEquals(await register("host", quote(false, "aa".repeat(32))), [400, "registration attestation did not verify: App Attest (stub)"]);
+  assertEquals(await register("host", quote(true, "bb".repeat(32))), [409, `agent_id host is bound to operator 0xop1; runner key ${"bb".repeat(32)} is not linked to it`]);
+  assertEquals((await register("fresh", quote(true, "bb".repeat(32))))[0], 409);
   assertEquals(await Deno.readTextFile(dataDir + "/records.jsonl").catch(() => ""), "");
-  assertEquals((await register("test-x", "00ff" + "cc".repeat(32)))[0], 200);
+  assertEquals((await register("test-x", quote(false, "cc".repeat(32))))[0], 200);
   // The operator's rotated key registers the same agent id.
-  assertEquals((await register("host", "01ff" + "a2".repeat(32), await Deno.makeTempDir()))[0], 200);
+  assertEquals((await register("host", quote(true, "a2".repeat(32)), await Deno.makeTempDir()))[0], 200);
   await custody.shutdown();
+});
+
+Deno.test("registration console ownership is retained across retries and guest renewals; replay cannot reassign it", async () => {
+  const f = await actionFixture(), owner = f.custody.operator, linked = "0x" + "77".repeat(20), stranger = "0x" + "88".repeat(20);
+  f.owners.push(linked);
+  const fixtureFetch = globalThis.fetch, sessions: Record<string, string> = { owner, owner_case: owner.toUpperCase(), linked, stranger };
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "https://pod.dstack.soc1024.com/layover-accounts/api/balance") {
+      const token = new Headers(init?.headers).get("authorization")?.slice(7) ?? "", address = sessions[token];
+      return Promise.resolve(address ? Response.json({ email: "fixture@example.com", address }) : Response.json({ error: "invalid session" }, { status: 401 }));
+    }
+    return fixtureFetch(input, init);
+  }) as typeof fetch;
+  const facts = { ...actionFacts, run: "79".repeat(32) }, agent_id = "console-owned-line";
+  const body = (counter: number) => {
+    const { ca_cert: _absent, ...row } = f.registration(facts, [counter]);
+    return { ...row, agent_id, coarse: { region: "Springfield, Illinois, US", isp_class: "cable", residential: true } };
+  };
+  const register = async (payload: any, token?: string) => {
+    const r = await handler(new Request("http://x/api/agents", { method: "POST", body: JSON.stringify(payload),
+      headers: token ? { authorization: "Bearer " + token } : {} }), { dataDir: f.dir });
+    return { status: r.status, body: await r.json() };
+  };
+  const ownedRows = async () => (await f.rows()).filter(r => r.kind === "agent" && r.agent_id === agent_id);
+  try {
+    const first = body(1), posted = await register(first, "owner");
+    assertEquals(posted.status, 200);
+    assertEquals(posted.body.registered_by, undefined, "the public registration response does not reveal console ownership");
+    assertEquals(posted.body.coarse.region, "US");
+    assertEquals((await ownedRows())[0].registered_by, owner);
+    assertEquals((await register(first, "owner_case")).body.duplicate, true);
+    assertEquals((await register({ ...first, registered_by: stranger })).body.duplicate, true, "an unsigned body field cannot replace the registrar");
+    assertEquals((await register(first, "linked")).status, 409, "even a linked account needs a fresh assertion to change this field");
+    assertEquals((await ownedRows()).length, 1);
+    assertEquals((await register(body(2), "linked")).status, 200);
+    assertEquals((await register({ ...body(3), registered_by: stranger })).status, 200);
+    assertEquals((await ownedRows()).map(r => r.registered_by), [owner, linked, linked]);
+    assertEquals((await register(first, "owner")).status, 409, "a superseded proof cannot restore prior console ownership");
+    assertEquals((await register(body(4), "stranger")).status, 400);
+    assertEquals((await ownedRows()).length, 3);
+    // Console sessions cannot replace the guest's signed transition authorization.
+    const unsigned = await handler(new Request(`http://x/api/leases/${actionId}/decision`, { method: "POST",
+      headers: { authorization: "Bearer owner" }, body: JSON.stringify({ decision: "decline", reason: "busy" }) }), { dataDir: f.dir });
+    assertEquals(unsigned.status, 400);
+    assertEquals((await f.rows()).filter(r => r.kind === "lease_decision").length, 0);
+    assertEquals((await f.post("decision", await f.signed("decision", { decision: "decline", reason: "busy" }))).status, 200);
+  } finally { await f.close(); }
 });
 
 Deno.test("signup: invites the email with the doorman's credential, validates role, limits per email and per IP", async () => {
@@ -85,62 +138,52 @@ Deno.test("signup: invites the email with the doorman's credential, validates ro
 });
 
 Deno.test("a declined bounty's statement is pushed to the souk as the doorman's statement message; a failed push is logged, the decision stands", async () => {
-  const dataDir = await Deno.makeTempDir(), id = "00000000-0000-4000-8000-0000000000b1", calls: { url: string; auth: string | null; body: any }[] = [], errors: string[] = [];
-  await Deno.writeTextFile(dataDir + "/records.jsonl", JSON.stringify({ kind: "bounty", id, agent_id: "a", buyer_key: "thread-9", at: new Date().toISOString() }) + "\n");
-  let reply = new Response("{}");
-  const realFetch = globalThis.fetch, realError = console.error;
-  globalThis.fetch = (async (url: string, init: RequestInit) => {
-    calls.push({ url, auth: new Headers(init.headers).get("authorization"), body: JSON.parse(init.body as string) });
-    return reply.clone();
-  }) as typeof fetch;
+  const f = await actionFixture({ resource: "bounty" }), errors: string[] = [];
+  const realError = console.error;
   console.error = (m: string) => errors.push(m);
-  const decide = (e: Record<string, string>) => handler(new Request(`http://x/api/bounties/${id}/decision`, { method: "POST", body: JSON.stringify({ decision: "decline", reason: "busy" }) }), { dataDir, env: e });
+  const decide = async (env: Record<string, string>) => f.post("decision", await f.signed("decision", { decision: "decline", reason: "busy" }), actionId, f.dir, env);
   try {
     await assertRejects(() => decide({}), Error, "SOUK_DOORMAN_CREDENTIAL");
-    reply = new Response("souk down", { status: 503 });
+    assertEquals(await f.rows(), f.initial);
+    f.souk.reply = new Response("souk down", { status: 503 });
     assertEquals((await decide({ SOUK_DOORMAN_CREDENTIAL: "doorman-token" })).status, 200);
-    await new Promise((r) => setTimeout(r, 50));
-    const [call] = calls, st = JSON.parse(call.body.text);
+    await new Promise((r) => setTimeout(r, 0));
+    const [call] = f.pushes, st = JSON.parse(call.body.text);
     assertEquals([call.url, call.auth, call.body.souk_id, call.body.kind], [SOUK_URL + "/api/souk_send", "Bearer doorman-token", SOUK_ID, "statement"]);
-    assertEquals([st.bounty_id, st.buyer_key, st.status, st.agent_id], [id, "thread-9", "declined", "a"]);
-    assertEquals(errors, [`souk: push of bounty ${id} failed (503): souk down`]);
+    assertEquals([st.bounty_id, st.buyer_key, st.status, st.agent_id], [actionId, "thread-fixture", "declined", actionAgentId]);
+    assertEquals(errors, [`souk: push of bounty ${actionId} failed (503): souk down`]);
   } finally {
-    globalThis.fetch = realFetch;
+    await f.close();
     console.error = realError;
   }
 });
 
 Deno.test("a bounty result whose pushed statement fails to build writes no record; a good result is written once and a failed push cannot undo it", async () => {
-  const dataDir = await Deno.makeTempDir(), id = "00000000-0000-4000-8000-0000000000b4", calls: { url: string; body: any }[] = [];
-  configure({ verify: (async () => ({ ok: true, mode: null, facts: { key_id: "k", manifest_sha256: "m", os_image_hash: "o", run: "r" }, checks: [], checked_at: "" })) as never });
-  const att = (await Deno.readTextFile(new URL(import.meta.url))).match(/const att = "([0-9a-f]+)"/)![1];
-  await Deno.writeTextFile(dataDir + "/records.jsonl", [
-    { kind: "agent", agent_id: "line-a", enc_pub: "77".repeat(32), attestation: att, coarse: { region: "r", isp_class: "c", residential: true } },
-    { kind: "bounty", id, agent_id: "line-a", buyer_key: "thread-4", at: new Date().toISOString() },
-    { kind: "decision", bounty_id: id, decision: "accept", reason: "ok", at: new Date().toISOString() },
-  ].map((r) => JSON.stringify(r) + "\n").join(""));
-  const real = globalThis.fetch;
-  globalThis.fetch = (async (url: string, init: RequestInit) => { calls.push({ url, body: JSON.parse(init.body as string) }); return Response.json({}); }) as typeof fetch;
-  const post = (items: unknown[]) => handler(new Request(`http://x/api/bounties/${id}/result`, { method: "POST", body: JSON.stringify({ result: { bounty_id: id, items }, attestation: "abcd" }) }), { dataDir, env: { SOUK_DOORMAN_CREDENTIAL: "doorman-token" } });
-  const kinds = async () => (await Deno.readTextFile(dataDir + "/records.jsonl")).trim().split("\n").map((l) => JSON.parse(l).kind);
+  const f = await actionFixture({ resource: "bounty", active: true }), errors: string[] = [];
+  const realError = console.error;
+  console.error = (m: string) => errors.push(m);
+  f.souk.reply = new Response("souk down", { status: 503 });
+  const post = async (items: any[]) => f.post("result", await f.signed("result", await f.resultPayload(items)));
   try {
-    // A null item breaks the statement's served count, so building the statement fails: today the error escapes the handler
-    // and the input-validation fix will answer 400 instead - either way the POST fails, and because the statement is built
-    // before the write, the failed POST leaves the log untouched and the bounty still accepted.
-    const failed = await post([null, { status: 200 }]).then((r) => r.ok, () => false);
-    assertEquals(failed, false, "the statement build failed before the write, so the POST must not succeed");
-    assertEquals(await kinds(), ["agent", "bounty", "decision"]);
-    assertEquals((await (await handler(new Request(`http://x/api/bounties/${id}`), { dataDir })).json()).status, "accepted");
+    // Result-item validation and statement construction must finish before the write.
+    assertEquals((await post([null, { status: 200 }])).status, 400);
+    assertEquals(await f.rows(), f.initial);
+    assertEquals(f.pushes, []);
+    assertEquals((await f.get(`bounties/${actionId}`)).status, "accepted");
     const r = await post([{ status: 200 }, { status: 403 }, { status: 302 }]);
     assertEquals(r.status, 200);
     const again = await post([]);
-    assertEquals([again.status, (await again.json()).error], [400, "bounty is done, not accepted"]);
-    assertEquals((await kinds()).filter((k) => k === "result").length, 1);
-    const st = await (await handler(new Request(`http://x/api/bounties/${id}/statement`), { dataDir })).json();
+    assertEquals([again.status, again.body.error], [400, "bounty is done, not accepted"]);
+    assertEquals((await f.rows()).filter(r => r.kind === "result").length, 1);
+    const st = await f.get(`bounties/${actionId}/statement`);
     assertEquals([st.status, st.requested, st.served, st.attestation_pass], ["done", 3, 1, true]);
-    assertEquals([calls.length, calls[0].url, calls[0].body.kind, JSON.parse(calls[0].body.text).bounty_id], [1, SOUK_URL + "/api/souk_send", "statement", id]);
+    const calls = f.pushes;
+    assertEquals([calls.length, calls[0].url, calls[0].body.kind, JSON.parse(calls[0].body.text).bounty_id], [1, SOUK_URL + "/api/souk_send", "statement", actionId]);
+    await new Promise((r) => setTimeout(r, 0));
+    assertEquals(errors, [`souk: push of bounty ${actionId} failed (503): souk down`]);
   } finally {
-    globalThis.fetch = real;
+    await f.close();
+    console.error = realError;
   }
 });
 
@@ -838,7 +881,7 @@ Deno.test("static: front door, retired redirects, shared navigation and explicit
     const get = (p: string) => handler(new Request("http://x" + p), { dataDir });
     const front = await (await get("/")).text();
     assertEquals(front, await (await get("/layover.html")).text());
-    assertEquals(front.includes("Airbnb for your agents"), true);
+    assertEquals(front.includes("guests pay hosts"), true);
     for (const [old, dest] of Object.entries({ "index.html": "layover.html", "deals.html": "dashboard.html#deals-tools", "supplier.html": "provider.html", "public.html": "dashboard.html", "leases.html": "dashboard.html#lease-statements" })) {
       const r = await get("/" + old);
       assertEquals([r.status, r.headers.get("location")], [302, dest]);

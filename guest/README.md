@@ -13,6 +13,7 @@ TLS-terminating proxy (Mode 2), and posts results and end-of-lease statements si
 | `control-policy.json` | the control gateway's policy: the site, custody and the broker, all on the pod |
 | `line-policy.json` | the line gateway's policy: `ipinfo.io` and `dns.google` |
 | `lease.mjs` | the proxy CA, leases, the relay streams and the TLS-terminating proxy (HTTP and WebSocket), end-of-lease statements |
+| `guest-action.mjs` | runner-signed authorization for lease and bounty decisions and updates |
 | `state.mjs` | sealed state across runs: the custody release and compare-and-swap commits |
 | `instructions.txt` | route-neutral default instructions (the off-Mac tests use it); each instance passes its own at launch |
 | `instances/` (local, not committed) | each host's instances: `launch.env` (agent id, daily bytes, route, payout and escrow addresses) and `instructions.txt` each |
@@ -72,8 +73,10 @@ The guest checks the gateway's `X-Dsmack-Body-Sha256` against the body it receiv
 
 Every call to the pod (site, custody, broker) that gets a 5xx is retried (the broker's re-signed with a fresh nonce each time), 0.5 s doubling to 5 s between tries and each
 one logged, until `RETRY_SECONDS` (180) have passed since the first; then the 5xx goes to the caller as before, and in the
-poll loop or the relay that ends the run. A 4xx is not retried. A POST that the pod carried out but answered with a 5xx
-gets a 4xx on the retry (a custody commit's compare-and-swap, a decision already recorded), which ends the run as a 5xx did before.
+poll loop or the relay that ends the run. A 4xx is not retried. Signed lease and bounty transitions reuse the same
+authorization on a retry; a committed request returns its original record without repeating the transition or souk push.
+Other POSTs can still answer 4xx after a successful write followed by a 5xx response, such as a custody commit's
+compare-and-swap, which ends the run as a 5xx did before.
 
 An exception while handling a bounty is posted as a decline whose reason starts with `guest error:`.
 If that post fails too (for example, the bounty was already accepted), the guest exits and the loop
@@ -116,6 +119,71 @@ shared leases on the same domains and bounties to them are served alongside it, 
 Each vantage check logs and posts `ip_commit = sha256(salt || ip)`, with `salt` from the sealed request (32 bytes)
 and `ip` as dotted ASCII. The buyer sees whether the commitment stayed the same; the site, without the salt,
 cannot test candidate addresses.
+
+### Authenticated guest updates
+
+The guest adds `authorization: {message, attestation}` to every lease `decision`, `vantage` and `end` POST, including
+the missing-log completion after a restart, and every bounty `decision` and `result` POST. The existing top-level
+payload remains intact. `guest-action.mjs` signs the following messages with the runner's existing `/v1/Attest` service:
+
+```text
+{kind: "layover-lease-action/1", audience, agent_id, lease_id, action,
+ issued_at, nonce, payload_sha256}
+{kind: "layover-bounty-action/1", audience, agent_id, bounty_id, action,
+ issued_at, nonce, payload_sha256}
+report_data = sha256(canonical(message)) || 0^32
+```
+
+`payload_sha256` hashes the UTF-8 `JSON.stringify` serialization of the original payload, excluding `authorization`.
+Its property order and number representation are preserved by the guest's JSON transport. Forecast probabilities
+remain ordinary JSON numbers; large encrypted receipts appear only once in the request. The nonce is 16 random bytes
+in lowercase hex and `issued_at` is Unix seconds. A new action must be no more than 300 seconds old and no more than
+60 seconds ahead of the site's clock, both when verified and when committed.
+
+The site binds the message to its configured audience, resource kind, route ID/action and registered agent. The quote
+must match the registration's runner key, run, manifest, base image and service caller. Custody must currently allow
+the workload and image, and the runner key must still link to the host operator. A lease completion or bounty result
+also retains its separate statement/result attestation, which must verify before the site records it. The bounty's
+original inner result format is unchanged. Request verification runs outside the commit lock; the site rechecks
+registration, resource state and consumed nonces under the short per-agent append lock.
+
+Exact retries return the original record without applying another transition, including after a site restart, request
+expiry or guest rotation. A nonce reused for different authorization is refused. The site stores only the nonce,
+issuance time and authorization fingerprint alongside the registration identity, rather than retaining the full action
+proof. Existing statement attestations remain stored for independent verification. Public lease and statement views
+continue to omit private prices, domains and receipts; public lease and bounty views omit action metadata.
+
+Home-region privacy can change a bounty's signed `result` in the public response. When it does, the result record carries
+`result_redacted: true` and omits its attestation and verification object, including the original binding details.
+`web/verify-offline.ts` reports independent verification as unavailable and exits unsuccessfully for that projection;
+it continues to hash and verify unmodified public results. Stored results and their attestations remain unchanged, and
+the site's `/statement` summary still reports the site's own verification of the original. That summary is not an
+independent proof of the projected fields. Supporting such a proof requires the guest to sign a separate public result
+or use a selective-disclosure format; this change does not add that protocol or expose the original private region.
+
+Registration retries also return the current record when its fields are identical. Previously observed registration
+proofs cannot restore a superseded registration, change its fields or move to another agent ID, even under the same
+operator. Replay identity uses the App Attest key, signed client-data hash and signed authenticator data; changing
+MessagePack/CBOR wrappers or signature encoding does not create a new identity. A fresh signed assertion counter
+within the same run permits a new registration, including a guest-key update. A short registration append lock checks
+all agent IDs; verification remains outside it. This guards previously observed proofs, not the freshness or first-use
+agent ID of a never-seen historical registration. Malformed assertions in older unverified `test-` smoke-test rows are
+excluded from the historical replay index; malformed real registrations still fail closed.
+
+**Deployment order:** build and authorize the signed guest with the existing release process, preserving the base VM,
+custody heads, sealed state and outstanding claim approvals; then update each guest and verify its new registration.
+The earlier site can consume its unchanged top-level payload while ignoring the added proof. Only after the guests
+have updated should the enforcing site be deployed. It has no unsigned compatibility fallback. This source change
+does not deploy a guest, change custody or approve a workload; existing claim-key rotation and drain rules still apply.
+
+The site's default audience is `https://pod.dstack.soc1024.com/resip-staging`, matching the guest's `RESIP_BASE`.
+The staging build rewrites that URL with its other site URLs. Other deployments must explicitly set
+`GUEST_ACTION_AUDIENCE` to the guest's exact `RESIP_BASE`; the site does not derive it from request or forwarded headers.
+
+The offline regressions are `deno test -A --no-check web/lease-action_test.ts web/bounty-action_test.ts`. They exercise
+the production guest signer with local cryptographic verifier fixtures, including retry, rotation, concurrency,
+registration replay, invalid completions/results and public-data redaction. They do not substitute for the existing
+attested guest release rehearsal.
 
 ## The log and end-of-lease statements
 

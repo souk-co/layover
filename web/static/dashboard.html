@@ -71,6 +71,8 @@ main>h2{margin:8px 0 0;font-size:20px}
 <div>
 <div class="lbl">Buyer console</div>
 <h2>Your leases</h2>
+<div class="note">Guests pay hosts at the agreed price per GB of request and response traffic, up to the deposit or authorized cap. A lease ends when its traffic budget or time window runs out; older leases may show hourly billing.</div>
+<div class="note">Test payments only: token-backed leases settle in LAYC through GuestEscrow on Base Sepolia; legacy leases use separate staging-credit ledgers. Unused site credit returns when the lease ends; unused token funds become releasable under the escrow's close and claim-grace rules. These balances are not cash host income.</div>
 <div class="note">Read your leases with your account secret and optional reply keys. These private records stay in this browser. Use Forget to clear them.</div>
 </div>
 <section class="card">
@@ -557,8 +559,8 @@ async function loadMine() {
       <details><summary>forecasts</summary><pre>${esc(JSON.stringify(d.forecasts, null, 2))}</pre></details></div>` : `<div class="note">Waiting for the agent's decision.</div>`}
     ${r ? `<div>Result: region ${esc(r.result.region)} · ISP class ${esc(r.result.isp_class)} · residential ${esc(r.result.residential)} · IP withheld</div>
       <div class="scroll"><table><thead><tr><th>URL</th><th>Status</th><th>Content sha256</th><th>Bytes</th><th>Cert sha256</th><th>Fetched</th></tr></thead><tbody>${r.result.items.map(item).join("")}</tbody></table></div>
-      <div>Result attestation: ${verdict(r.verification)}</div>
-      <details><summary>attestation blob (hex)</summary><div class="mono">${esc(r.attestation)}</div></details>`
+      <div>Result attestation: ${r.result_redacted ? '<span class="note">Independent verification unavailable: public result redacted for privacy.</span>' : verdict(r.verification)}</div>
+      ${!r.result_redacted && r.attestation ? `<details><summary>attestation blob (hex)</summary><div class="mono">${esc(r.attestation)}</div></details>` : ""}`
       : b.expired ? `<div class="bad">Expired ${esc(b.expired.at)}: ${esc(b.expired.reason)}</div>` : d?.decision === "accept" ? `<div class="note">Accepted; waiting for the result.</div>` : ""}
     </div>`;
   }).join("") : `<div class="note">No bounties from this browser yet.</div>`);
