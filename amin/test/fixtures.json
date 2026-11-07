@@ -509,7 +509,12 @@
    "last_error_code": "node_gateway_error",
    "run_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
    "verified": true,
-   "handoverAt": 1793913379
+   "handoverAt": 1793913379,
+   "browse": {
+    "default": "named",
+    "open": 5000,
+    "named": 100
+   }
   },
   {
    "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
@@ -524,7 +529,12 @@
    "last_error_code": null,
    "run_id": "0x0000000000000000000000000000000000000000000000000000000000000009",
    "verified": false,
-   "handoverAt": 1793913379
+   "handoverAt": 1793913379,
+   "browse": {
+    "default": "named",
+    "open": 5000,
+    "named": 100
+   }
   },
   {
    "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
@@ -539,7 +549,12 @@
    "last_error_code": null,
    "run_id": "0x0000000000000000000000000000000000000000000000000000000000000002",
    "verified": false,
-   "handoverAt": 1793915030
+   "handoverAt": 1793915030,
+   "browse": {
+    "default": "named",
+    "open": 5000,
+    "named": 100
+   }
   },
   {
    "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
@@ -554,7 +569,12 @@
    "last_error_code": null,
    "run_id": "0x0000000000000000000000000000000000000000000000000000000000000003",
    "verified": true,
-   "handoverAt": 1793913253
+   "handoverAt": 1793913253,
+   "browse": {
+    "default": "named",
+    "open": 5000,
+    "named": 100
+   }
   },
   {
    "publisher": "0x00000000000000000000000000000000000000aa",
@@ -569,7 +589,12 @@
    "last_error_code": null,
    "run_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
    "verified": true,
-   "handoverAt": 1793902600
+   "handoverAt": 1793902600,
+   "browse": {
+    "default": "named",
+    "open": 5000,
+    "named": 100
+   }
   }
  ],
  "/api/market": {

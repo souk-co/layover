@@ -11,6 +11,12 @@ import { APPRAISAL, DRAND, type Kind, latestRound, PROBE, randomness, scan } fro
 type Ctx = { dataDir: string; env?: Record<string, string> };
 type Rec = Record<string, any>;
 const must = (c: unknown, m: string) => { if (!c) throw new Bad(m); };
+// Routes destructure or read fields of the parsed body, so a POST body that is not a JSON object (null, a scalar, an array) is a 400, not a TypeError 500.
+async function jsonBody(req: Request): Promise<Rec> {
+  const body = await req.json();
+  must(body && typeof body === "object" && !Array.isArray(body), "body: a JSON object");
+  return body;
+}
 class Conflict extends Bad {}
 class Upstream extends Bad {}
 class Limited extends Bad {}
@@ -71,7 +77,8 @@ export const configure = (o: Partial<typeof cfg>) => Object.assign(cfg, o);
 const verdicts = new Map<string, ReturnType<typeof verify>>();
 const checked = (att: string, data: Uint8Array, expect?: { run: string; manifest_sha256: string }) => {
   const k = att + ":" + hex(data) + ":" + JSON.stringify(expect ?? null);
-  if (!verdicts.has(k)) verdicts.set(k, cfg.verify(att, data, expect).catch((e) => { verdicts.delete(k); throw e; }));
+  // verify() reports a layover-chain timeout as a failed check rather than throwing: only a passing verdict is kept.
+  if (!verdicts.has(k)) verdicts.set(k, cfg.verify(att, data, expect).then((v) => { if (!v.ok) verdicts.delete(k); return v; }, (e) => { verdicts.delete(k); throw e; }));
   return verdicts.get(k)!;
 };
 const sameRun = (a: Rec) => a.facts;
@@ -263,6 +270,46 @@ const SINCE = new Date().toISOString(), seenOnline = new Map<string, { online: n
 // The host's posted browse surcharges (operator.json browse.price, nano-USD per second; the broker's browseRate reads a missing
 // price as 0): open above a non-open default, named per host. The amin checks a stay's rate against them.
 const browsePrice = (b?: Rec) => b ? { default: b.default, open: Number(b.price?.open_nano_usd_per_second ?? 0), named: Number(b.price?.named_host_nano_usd_per_second ?? 0) } : null;
+// Host levels (#153): named presets over the knobs a host already posts (a MacBook you use, a MacBook on its charger, an
+// always-on mini, and the mini plus extras), so a host picks one instead of setting each field; any field it posts beside the
+// level still wins. slots.max null is no ceiling; "days" of max stay is 3 days for a guest room, 7 for a suite.
+export const HOST_LEVELS: Record<string, { availability: Rec; slots: { min: number; max: number | null }; max_stay_s: number; perks: string[] }> = {
+  air_mattress: { availability: { kind: "lid_open", leave_notice_s: 300 }, slots: { min: 1, max: 1 }, max_stay_s: 3600, perks: [] },
+  futon: { availability: { kind: "hours", hours: ["22:00", "08:00"] }, slots: { min: 1, max: 2 }, max_stay_s: 28800, perks: ["browse_package_hosts"] },
+  guest_room: { availability: { kind: "always" }, slots: { min: 3, max: 4 }, max_stay_s: 259200, perks: ["browse_package_hosts", "home_line"] },
+  suite: { availability: { kind: "always" }, slots: { min: 4, max: null }, max_stay_s: 604800, perks: ["line", "vpn_exit", "ai_plan_allowance", "open_browse"] },
+};
+// The couch card a level expands to: the preset with the host's explicit fields over it (config.host in its fleet heartbeat:
+// {level, and any of availability, slots, max_stay_s, perks}). The buyer side reads these fields, not the level's name, so a
+// host that changed one still reads true. A level not in the table, or a field of the wrong shape, throws a Bad naming it,
+// which couchSlots serves on that host's rows as card_error rather than failing the whole listing.
+export function hostLevel(host: Rec) {
+  // The lookup must be an own string key of the table: ["suite"] would coerce to "suite", and a plain [] would pass
+  // inherited keys like "constructor" as levels.
+  const preset = typeof host.level === "string" && Object.hasOwn(HOST_LEVELS, host.level) ? HOST_LEVELS[host.level] : undefined;
+  if (!preset) throw new Bad(`level: ${JSON.stringify(host.level).slice(0, 100)} is not one of ${Object.keys(HOST_LEVELS).join(", ")}`);
+  const card: Rec = { level: host.level, availability: preset.availability, slots: preset.slots, max_stay_s: preset.max_stay_s, perks: preset.perks };
+  for (const k of ["availability", "slots", "max_stay_s", "perks"]) if (host[k] !== undefined) card[k] = host[k];
+  const a = card.availability;
+  must(["lid_open", "hours", "always"].includes(a?.kind), "availability.kind: one of lid_open, hours, always");
+  must(a.kind !== "hours" || Array.isArray(a.hours) && a.hours.length === 2 && a.hours.every((h: unknown) => typeof h === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(h)), 'availability.hours: ["HH:MM", "HH:MM"], e.g. ["22:00", "08:00"]');
+  must(a.leave_notice_s === undefined || Number.isInteger(a.leave_notice_s) && a.leave_notice_s > 0, "availability.leave_notice_s: whole seconds of notice");
+  must(Number.isInteger(card.slots?.min) && card.slots.min >= 1 && (card.slots.max === null || Number.isInteger(card.slots.max) && card.slots.max >= card.slots.min), "slots: {min >= 1, max >= min or null for no ceiling}");
+  must(Number.isInteger(card.max_stay_s) && card.max_stay_s > 0, "max_stay_s: whole seconds");
+  must(Array.isArray(card.perks) && card.perks.every((p: unknown) => typeof p === "string"), "perks: strings");
+  return card;
+}
+// A host whose card fails to expand (it posted a level not in the table or a field of the wrong shape) is still listed: its
+// rows unchanged with the failure named, so one misposting host cannot hide every other host from buyers.
+const cardOf = (host?: Rec) => {
+  if (host?.level === undefined) return {};
+  try {
+    return hostLevel(host);
+  } catch (e) {
+    if (!(e instanceof Bad)) throw e;
+    return { card_error: e.message };
+  }
+};
 async function couchSlots() {
   const fleet = await upstream("broker /fleet", BROKER_FLEET, 15000);
   for (const m of fleet) {
@@ -270,7 +317,9 @@ async function couchSlots() {
     seenOnline.set(m.publisher, { online: u.online + (m.online ? 1 : 0), samples: u.samples + 1 });
   }
   return fleet.flatMap((m: Rec) => m.slots.map((s: Rec) => ({ publisher: m.publisher, chip: m.hardware.chip,
-    online: m.online, updated_at: m.updated_at, vcpus: m.config.guest.vcpus, mem_mib: m.config.guest.mem_mib, browse: browsePrice(m.config.browse), slot_id: s.slot_id,
+    online: m.online, updated_at: m.updated_at, vcpus: m.config.guest.vcpus, mem_mib: m.config.guest.mem_mib, browse: browsePrice(m.config.browse),
+    // A host that picked a level serves its expanded card on each of its slot rows; a host without one serves today's row unchanged.
+    ...cardOf(m.config.host), slot_id: s.slot_id,
     // The broker stamps a guest whose last relay hop it was refused; such a slot is not offered as ready until a hop succeeds.
     state: s.attestation?.unreachable ? "unreachable" : s.state, unreachable: s.attestation?.unreachable ?? null,
     last_error_code: s.last_error_code, run_id: s.run_id, verified: s.attestation?.attestation?.status === "verified", handoverAt: s.attestation?.admit_until ?? null,
@@ -331,7 +380,7 @@ const POLL_MS = 25000, HANDOFF_MS = 10000;
 async function relay(req: Request, path: string, agents: () => Promise<Map<string, Rec>>) {
   for (const [id, r] of relays) if (Date.now() - r.seen > 10 * 60e3) relays.delete(id);
   if (path === "/api/relay/open" && req.method === "POST") {
-    const { agent_id } = await req.json();
+    const { agent_id } = await jsonBody(req);
     must((await agents()).has(agent_id), "agent_id: not registered");
     const id = crypto.randomUUID();
     relays.set(id, { agent_id, up: pipe(), down: pipe(), seen: Date.now(), taken: false });
@@ -385,7 +434,7 @@ const minionRows = (rs: Rec[]) => rs.filter((r) => r.kind === "minion").map((r) 
 async function api(req: Request, path: string, ctx: Ctx) {
   const url = new URL(req.url), rs = await records(ctx), { requests, appraisals, agents, bounties, leases, accounts, probeRequests, probes, anchors, verify } = await state(rs);
   if (VERIFIED.some((x) => x[1] === req.method && x[0].test(path))) await verify();
-  const body = req.method === "POST" ? await req.json() : null;
+  const body = req.method === "POST" ? await jsonBody(req) : null;
   if (path === "/api/agents" && req.method === "GET") {
     const selected = url.searchParams.get("agent_id");
     return await Promise.all([...agents.values()].filter(a => selected === null || a.agent_id === selected).map(async a => {
@@ -587,6 +636,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
       must(b!.status === "accepted", `bounty is ${b!.status}, not accepted`);
       const { result, attestation } = body;
       must(result && result.bounty_id === b!.id && Array.isArray(result.items), "result: {bounty_id matching the URL, items:[...], ...}");
+      must(result.items.every((i: Rec) => i && typeof i === "object" && !Array.isArray(i)), "result.items: each item is an object");
       must(isHex(attestation), "attestation: lowercase hex VersionedAttestation");
       noIp(result, "result");
       const verification = await checked(attestation, await binding(new TextEncoder().encode(canonical(result))), sameRun(agents.get(b!.agent_id)!));
@@ -755,7 +805,7 @@ function limit(kind: "email" | "ip", key: string) {
 }
 async function signup(req: Request, ctx: Ctx) {
   must(req.method === "POST", "POST required");
-  const { email, role } = await req.json();
+  const { email, role } = await jsonBody(req);
   must(typeof email === "string" && email.length <= 254 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email), "email: an email address");
   must(role === "buyer" || role === "host", 'role: "buyer" (use hosts\' couches, connections and tools) or "host" (offer your Mac)');
   const token = ctx.env?.SOUK_DOORMAN_CREDENTIAL;
@@ -792,12 +842,25 @@ export const ESCROWS = [
 ];
 export const LOG_SPAN = 200, INDEX_MAX = 2000;
 const claims = { since: null as number | null, scanned_to: null as number | null, missed_blocks: 0, recent: [] as Rec[] };
-async function rpc(url: string, method: string, params: unknown[]) {
-  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(10000) })
-    .catch((e) => { throw new Upstream(`${method} at ${url}: ${e.message}`); });
-  const j = await r.json();
-  if (j.error) throw new Upstream(`${method} at ${url}: ${j.error.message}`);
-  return j.result;
+// sepolia.base.org sometimes answers a read with result null: an RPC hiccup, not an answer, and returning it made escrow() trip
+// over the null and answer 500. A read whose method always has a value is asked again a bounded number of times, then the null is
+// refused as an upstream error. Sends are never retried: this site only reads. `until` is one deadline for a whole status read
+// (escrow()'s serial eth_calls share it, since they hold chainLock and /api/market queues behind them): each fetch's timeout
+// shrinks to the time left of it and a retry that would cross it is not made, so the worst case is the deadline, not
+// RPC_TRIES × the 10 s timeout.
+const NEVER_NULL = new Set(["eth_call", "eth_blockNumber", "eth_getBalance", "eth_getTransactionCount", "eth_getBlockByNumber", "eth_gasPrice", "eth_estimateGas", "eth_maxPriorityFeePerGas"]);
+export const RPC_TRIES = 4, RPC_READ_MS = 20000;
+async function rpc(url: string, method: string, params: unknown[], until = Number.POSITIVE_INFINITY) {
+  for (let i = 1; ; i++) {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal: AbortSignal.timeout(Math.min(10000, Math.max(0, until - Date.now()))) })
+      .catch((e) => { throw new Upstream(`${method} at ${url}: ${e.message}`); });
+    const j = await r.json();
+    if (j.error) throw new Upstream(`${method} at ${url}: ${j.error.message}`);
+    if (j.result !== null && j.result !== undefined || !NEVER_NULL.has(method)) return j.result;
+    if (i === RPC_TRIES) throw new Upstream(`${method} at ${url}: the RPC answered null ${i} times`);
+    if (Date.now() + 500 * i >= until) throw new Upstream(`${method} at ${url}: the RPC keeps answering null and the status read's deadline passed`);
+    await new Promise((x) => setTimeout(x, 500 * i));
+  }
 }
 async function chain(path: string, q: Record<string, string>) {
   const u = `${CHAIN}${path}?${new URLSearchParams(q)}`;
@@ -850,7 +913,9 @@ async function scanClaims(ctx: Ctx) {
   return { since: claims.since, scanned_to: claims.scanned_to, missed_blocks: claims.missed_blocks };
 }
 async function escrow(ctx: Ctx) {
-  const call = (to: string, data: string) => rpc(ESCROW.rpc, "eth_call", [{ to, data }, "latest"]);
+  // The three serial reads share one deadline, RPC_READ_MS from now: they hold chainLock, and /api/market queues behind them.
+  const until = Date.now() + RPC_READ_MS;
+  const call = (to: string, data: string) => rpc(ESCROW.rpc, "eth_call", [{ to, data }, "latest"], until);
   const token = "0x" + (await call(ESCROW.address, "0xfc0c546a")).slice(26);
   const [balance, decimals] = [word(await call(token, "0x70a08231" + ESCROW.address.slice(2).toLowerCase().padStart(64, "0")), 0), word(await call(token, "0x313ce567"), 0)];
   const index = await scanClaims(ctx);

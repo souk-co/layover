@@ -1,0 +1,24 @@
+# Service block to paste into the layover-tee compose (next to layover-chain and dstack-ingress).
+# No host-published ports: the in-CVM ingress reaches it on the compose network as http://minion:8080.
+# The build context is relative to this file; if the tee's compose lives elsewhere, build the image
+# once from the repo root (docker build -f minion/cvm/Dockerfile .) and reference it by name instead.
+services:
+  minion:
+    build:
+      context: ../..
+      dockerfile: minion/cvm/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    expose: ["8080"]
+    environment:
+      APP_ID: ${APP_ID:?set approved dstack app ID}
+      BUYER_ADDRESS: ${BUYER_ADDRESS:?set LastResortBuyer proxy address}
+      EPOCH: ${EPOCH:?set current epoch}
+      CHAIN_ID: "8453"
+      ROWS_PUBLIC_KEY: ${ROWS_PUBLIC_KEY:-}
+      ROWS_FILE: /data/rows.jsonl
+      OPERATORS_FILE: /data/operators.json
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - ${ROWS_FILE:?set baseline rows path}:/data/rows.jsonl:ro
+      - ${OPERATORS_FILE:?set operator map path}:/data/operators.json:ro

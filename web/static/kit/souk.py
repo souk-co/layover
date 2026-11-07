@@ -99,7 +99,7 @@ def credential() -> tuple[str, str]:
     url = os.environ.get("SOUK_URL") or saved.get("url")
     token = os.environ.get("SOUK_TOKEN") or saved.get("token")
     if not url or not token:
-        raise SoukError(0, "Not signed in. Run: souk.py login <base-url> <email>")
+        raise SoukError(0, "Not signed in. Run: account login EMAIL (buyers, per SKILL.md) or souk.py login <url> <email> (hosts, per HOSTING.md)")
     return url.rstrip("/"), token
 
 
@@ -143,7 +143,7 @@ def http(
         if isinstance(message, dict):
             message = message.get("message", error.reason)
         if error.code == 401:
-            message = f"{message}; sign in again with: souk.py login <url> <email>"
+            message = f"{message}; sign in again with: account login EMAIL (buyers, per SKILL.md) or souk.py login <url> <email> (hosts, per HOSTING.md)"
         raise SoukError(error.code, str(message)) from None
 
 

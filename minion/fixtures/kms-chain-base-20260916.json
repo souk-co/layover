@@ -1,0 +1,11 @@
+{
+ "source": "teleport tee-interop docs/paper-demo/deployments/dstack-ready-20260916/evidence/dstack-live-admission-check.json: a GetKey(purpose \"ethereum\") signature chain from a live dstack-0.5.8 CVM on Phala's Base KMS, app 0x2A45F45C1A504d2E5245b8FB322f9Dd718597210; checked positive on Base mainnet by DstackAdmissionV1 at block 51401489",
+ "kmsContract": "0x2f83172A49584C017F2B256F0FB2Dca14126Ba9C",
+ "kmsRoot": "0x52d3CF51c8A37A2CCfC79bBb98c7810d7Dd4CE51",
+ "appId": "0x2a45f45c1a504d2e5245b8fb322f9dd718597210",
+ "purpose": "ethereum",
+ "derivedPubkey": "0x03d1270a2e9f2ce60e266f56b67409901c264e65320c028bb67f62558e66214ba9",
+ "appPubkey": "0x03db8116c8b931340e2cca8eeff3d4069e6644c3942cb58ac75246c214db242a45",
+ "appSignature": "0x655de1b92885f60077ce1a51307850b2043bec54ea990dc4e82bf0593c9309d2056c7a48a3e9653dfc4fadcb17cc0b8514f6cfe50398f27425343df68b769dc001",
+ "kmsSignature": "0xe1ebc1d54ed2bb158f336232235d691e9142dda3c4aaa00621f03f7c82e3a93c597d2d9a1e429b39c7f14f9ebbc2ac2edeb0501282d7ecd595244a9548724e3501"
+}

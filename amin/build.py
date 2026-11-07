@@ -33,9 +33,34 @@ def program_source(source):
     return "".join(lines)
 
 
+def squeeze(source):
+    # Drop each space outside string literals that does not separate two word characters ("x = f(a, b)" -> "x=f(a,b)").
+    fs, fe, depth, spans = getattr(tokenize, "FSTRING_START", -1), getattr(tokenize, "FSTRING_END", -1), 0, []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == fs:
+            depth, start = depth + 1, token.start if depth == 0 else start
+        elif token.type == fe:
+            depth -= 1
+            if not depth:
+                spans.append((start, token.end))
+        elif token.type == tokenize.STRING and not depth:
+            spans.append((token.start, token.end))
+    lines = source.split("\n")
+    kept = [set() for _ in lines]
+    for (r0, c0), (r1, c1) in spans:
+        for r in range(r0, r1 + 1):
+            kept[r - 1].update(range(c0 if r == r0 else 0, c1 if r == r1 else len(lines[r - 1])))
+    word = lambda ch: ch.isalnum() or ch == "_"
+    out = []
+    for line, keep in zip(lines, kept):
+        body = len(line) - len(line.lstrip(" "))
+        out.append(line[:body] + "".join(ch for c, ch in enumerate(line) if c >= body and (ch != " " or c in keep or word(line[c - 1]) and c + 1 < len(line) and word(line[c + 1]))))
+    return "\n".join(out)
+
+
 def compact_source(source):
-    # AST formatting removes comments; compress indentation only outside string literals.
-    formatted = ast.unparse(ast.parse(source))
+    # AST formatting removes comments; compress indentation only outside string literals, then spaces (squeeze).
+    formatted = squeeze(ast.unparse(ast.parse(source)))
     protected = {line for token in tokenize.generate_tokens(io.StringIO(formatted).readline)
                  if token.type == tokenize.STRING and token.start[0] != token.end[0]
                  for line in range(token.start[0], token.end[0] + 1)}

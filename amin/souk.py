@@ -8,6 +8,7 @@ from souk import (
     Invite,
     Joined,
     Message,
+    RunFinished,
     RunInterrupted,
     Timer,
     ToolDone,
@@ -35,6 +36,7 @@ REQUEST_URL = re.compile(re.escape(RESIP) + f"/api/appraisal-requests/({UUID})")
 SCHEDULER = "resip-staging scheduler"  # the site's own appraisal requests
 STATEMENT_URL = re.compile(re.escape(RESIP) + f"/api/leases/({UUID})/statement")
 BOUNTY_URL = RESIP + "/api/bounties/{}/statement"
+SITE = "d66af929-2665-4618-b13d-fe68085111d1"  # the resip site's doorman member, which pushes bounty statements
 DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 CATEGORIES = ("price_check", "research", "account_operation")
 FETCH_CATEGORIES = ("price_check", "research")
@@ -98,7 +100,7 @@ def on_event(e, s):
 
 def handle(e, s):
     if isinstance(e, RunInterrupted) and e.thread:
-        return [post(e.thread, f"The amin stopped before finishing ({e.reason}); send any message here to resume.")]
+        return [*clear(s.thread(e.thread), "polling"), post(e.thread, f"The amin stopped before finishing ({e.reason}); send any message here to resume.")]
     if isinstance(e, Invite):
         return [admit(e.invitee, e.roles)] if set(e.roles) <= set(e.sender.roles) else []
     if isinstance(e, Joined):
@@ -122,11 +124,15 @@ def handle(e, s):
         return reference(e, s)
     if m == "references":
         return subscribe(e, s)
+    if m == "statement":
+        return pushed(e, s)
     if isinstance(e, Message) and e.thread is None:
         return top_level(e, s)
     t = s.thread(e.thread) if e.thread else None
     if t is None:
         return []
+    if isinstance(e, RunFinished):
+        return clear(t, "polling")
     wf, k = isinstance(e, ToolDone) and e.tool == "runtime.web_fetch", t.data["kind"]
     if t.data.get("allocate") and t.flag("closed"):
         return []
@@ -138,7 +144,7 @@ def handle(e, s):
         if e.kind == "withdraw" and k == "line":
             return withdraw(e, t, s)
         if k == "fetch" and t.flag("accepted"):
-            return bounty_named(e, t)
+            return bounty_named(e, t, s)
         if k == "couch" and t.flag("accepted") and SESSION.match(e.text):
             return stay_settled(e, t, s)
         if t.flag("agreed") and not t.flag("accepted"):
@@ -151,7 +157,7 @@ def handle(e, s):
         return next_check(t, e.at, "") if live else []
     if isinstance(e, Timer) and e.name == "escrow_poll":
         live = t.flag("accepted") and not t.flag("settled") and not t.flag("escrow_started")
-        return [set_timer(e.at + ESCROW_POLL_SECONDS, "escrow_poll", thread=t.id), run("prompts/escrow.md", see=["thread"], tools=["runtime.web_fetch", "post"])] if live else []
+        return [set_timer(e.at + ESCROW_POLL_SECONDS, "escrow_poll", thread=t.id), amin(t)] if live else []
     if isinstance(e, Timer) and e.name in ("escrow_end", "escrow_unstarted"):
         return escrow_end(t, e.name) if not t.flag("settled") and (e.name == "escrow_end" or not t.flag("escrow_started")) else []
     if isinstance(e, Timer):
@@ -159,7 +165,8 @@ def handle(e, s):
             return [t.clear_flag("recheck_pending")]
         if e.name == "end":
             return [amin(t)]
-        return [set_timer(e.at + wait(t), "recheck", thread=t.id), amin(t)] if t.flag("recheck_pending") else []
+        # One poll run at a time: runs queued behind a busy host must not pile up and run after settlement.
+        return [set_timer(e.at + wait(t), "recheck", thread=t.id), *([] if t.flag("polling") else [t.set_flag("polling"), amin(t)])] if t.flag("recheck_pending") else []
     if isinstance(e, ToolDone) and e.tool == "credits.hold" and e.origin == "program":
         if e.state != "done":
             return [t.set_flag("closed"), post(t, f"The hold of {e.args['amount']} credits failed ({e.result}); no deal was made.")]
@@ -275,7 +282,7 @@ def next_check(t, at, notice, wallet=None):
             t.set_flag(f"escrow_from:{since}"), *([post(t, notice)] if notice else []),
             # The amin's run sees the thread's messages and stored records, not the program's posts: the reads go in a record.
             store(dict(text="Checking GuestEscrow, in this order:\n" + "\n".join(escrow_checks(t, wallet)))), set_timer(at + ESCROW_WATCH_SECONDS, f"escrow_check:{n + 1}", thread=t.id),
-            run("prompts/escrow.md", see=["thread"], tools=["runtime.web_fetch", "post"])]
+            amin(t)]
 
 
 def escrow_checks(t, wallet=None):
@@ -564,9 +571,9 @@ def hold_notice(t):
             f"(https, GET only, on {', '.join(x['domains'])}) one per line into a file URLS, {x['pages']} lines (repeat a URL to fetch it again). "
             f"Then, after `resip verify {RESIP} {x['agent_id']} DIR`, post the job to the line:\n"
             f"resip bounty DIR {t.id} URLS {x['price']}\n"
-            f"and when it prints the pages, send `bounty <bounty id>` in this thread. The amin settles from the site's statement for that bounty: the seller gets {x['price']} credits × "
-            f"the pages served (status 2xx in the line's signed result, at most {x['pages']}) / {x['pages']}, rounded to the nearest credit, and nothing if the "
-            "result's attestation fails; you get the rest back. A declined or expired bounty returns the whole hold."
+            f"and send `bounty <bounty id>` here when it prints the pages. The program settles when the site reports the job done: the seller gets "
+            f"{x['price']} credits × pages served (2xx in the line's signed result, at most {x['pages']}) / {x['pages']}, rounded, and nothing if its attestation fails; you get the rest. "
+            "A declined or expired bounty returns the whole hold."
         )
     mode = "exclusive" if x["exclusive"] else "shared"
     return (
@@ -583,7 +590,7 @@ def stay_notice(t):
     x = t.record("terms")
     return (
         f"Accepted. Nothing is held here: you pay the stay on the dsmack broker from your wallet's credit, at the broker's rate of {COUCH_RATE} nano-USD "
-        f"per active guest second (${COUCH_RATE * 60 / 1e9:.3f} per minute, 60 s minimum). Open it with the couch MCP tool:\n"
+        f"per active guest second (${COUCH_RATE * 60 / 1e9:.4f} per minute, 60 s minimum). Open it with the couch MCP tool:\n"
         "stay_open " + json.dumps(dict(publisher=x["publisher"], slot_id=x["slot_id"], conversation_id=t.id)) + "\n"
         f"Work in it, then call stay_close and send its JSON here as `stay <json>`. That is the stay's settlement record."
     )
@@ -594,11 +601,12 @@ def stay_settled(e, t, s):
         return [store(e), post(t, "This stay's settlement is already recorded.")]
     r, x = json.loads(SESSION.match(e.text).group(1)), t.record("terms")
     placement, used, rate, charged = r["placement"], nat(r["guestSeconds"]), int(r["rateNanoUsdPerSecond"]), int(r["chargedNanoUsd"])
+    posted = COUCH_RATE + browse_rate(x.get("browse"), r.get("browse"))
     why = ("sessionId is not a broker session id" if not re.fullmatch("[0-9a-f]{32}", r["sessionId"])
            else f"it ran on slot {placement['slot_id']} of {placement['publisher']}, not the agreed slot {x['slot_id']} of {x['publisher']}"
            if (placement["publisher"].lower(), placement["slot_id"]) != (x["publisher"].lower(), x["slot_id"])
-           else f"its rate is {rate}, not the broker's {COUCH_RATE}" if rate != COUCH_RATE
-           else f"{charged} nano-USD is not the broker's charge for {used} guest seconds ({max(60, used) * COUCH_RATE})" if charged != max(60, used) * COUCH_RATE
+           else f"its rate is {rate}, not the posted {posted}" if rate != posted
+           else f"{charged} nano-USD is not the broker's charge for {used} guest seconds ({max(60, used) * posted})" if charged != max(60, used) * posted
            else None)
     if why:
         return [store(e), post(t, f"That stay record does not settle these terms: {why}. Send the stay_close JSON of the agreed stay.")]
@@ -607,6 +615,14 @@ def stay_settled(e, t, s):
         f"broker to wallet {r['wallet']}, closed ({r['closedReason']}). This is the stay's settlement record, as reported from the broker's session view; "
         f"the amin moved no money. Deposited credit accrues to the host's operator {r['operator']} on the broker's UsageEscrow; starter credit pays nothing on chain." + ask_buyer(t))),
         *ask_host(t, s)]
+
+
+# The broker's browseRate on the host's posted surcharges (/api/couch-slots `browse`): open above a non-open default, named per host.
+def browse_rate(policy, ask):
+    policy, mode = policy or {}, (ask or {}).get("mode")
+    if mode == "named":
+        return policy.get("named", 0) * len(ask["hosts"])
+    return policy.get("open", 0) if mode == "open" and policy.get("default") != "open" else 0
 
 
 def listing(result):
@@ -802,10 +818,13 @@ def claimed(t):
     return tag(t, "bounty:")
 
 
-def bounty_named(e, t):
+def bounty_named(e, t, s):
     ids = sorted(set(re.findall(UUID, e.text)))
     claim = [t.set_flag("bounty:" + ids[0])] if not t.flag("settled") and not claimed(t) and len(ids) == 1 else []
-    return [store(e), *claim, amin(t)]
+    # Only the buyer's named bounty settles (anyone can post a bounty under this thread's key); one the site already pushed settles now.
+    bid = claimed(t) or claim and ids[0]
+    st = bid and t.record("statement:" + bid)
+    return [store(e), *claim, *(bounty_settle(st["statement"], t, s, [], "pushed") if st and not t.flag("settled") else [amin(t)])]
 
 
 # A bounty's buyer_key must be this thread's id, so it settles at most one deal.
@@ -813,14 +832,30 @@ def bounty_read(e, t, s):
     bid = claimed(t)
     if t.flag("settled") or not bid or e.args["url"] != BOUNTY_URL.format(bid):
         return []
-    d, x = doc(e.result) if e.state == "done" else None, t.record("terms")
-    armed = arm(t, e.at)
+    d, armed = doc(e.result) if e.state == "done" else None, arm(t, e.at)
     if not d or d.get("bounty_id") != bid:
-        return armed
+        why = e.state if e.state != "done" else d.get("error", "wrong bounty") if d else json.loads(e.result["content"])["status"]
+        f = "readfail:" + why
+        return armed + [t.set_flag(f), post(t, f"Reading bounty {bid}'s statement failed ({why}); retrying.")] * (not t.flag(f))
+    return bounty_settle(d, t, s, armed, "polled")
+
+
+# The site pushes a bounty's statement when the bounty is decided or done. A top-level event cannot change a thread, so the
+# program records it in the deal's thread and settles on that record's ToolDone: two program steps, no model run.
+def pushed(e, s):
+    if e.sender.person != SITE:
+        raise ValueError("only the site pushes statements")
+    d = json.loads(e.text)
+    t = s.thread(d["buyer_key"])
+    return [call("record", thread=t.id, finding="statement:" + d["bounty_id"], state=d["status"], reason="site", statement=d)] if t and t.data["kind"] == "fetch" else []
+
+
+def bounty_settle(d, t, s, armed, source):
+    bid, x = d["bounty_id"], t.record("terms")
     why = (f"it is on {d['agent_id']}, not the agreed line {x['agent_id']}" if d["agent_id"] != x["agent_id"]
            else f"its key is {d['buyer_key']!r}, not this thread's id {t.id}" if d["buyer_key"] != t.id else None)
     if why:
-        return [t.clear_flag("bounty:" + bid), t.clear_flag("recheck_pending"), post(t, f"Bounty {bid} cannot settle this deal: {why}. Post the job with the command in the escrow post and send its id.")]
+        return [t.clear_flag("bounty:" + bid), t.clear_flag("recheck_pending"), post(t, f"Bounty {bid} cannot settle this deal: {why}. Send the id of the job you posted for it.")]
     hold = t.tool_fact("credits.hold")["hold"]
     if d["status"] in ("declined", "expired"):
         return [t.set_flag("settled"), call("credits.release_hold", hold=hold), post(t, f"Bounty {bid} was {d['status']}; the whole hold of {x['price']} credits goes back to the buyer.")]
@@ -831,7 +866,7 @@ def bounty_read(e, t, s):
     split = {k: v for k, v in {x["seller"]: seller, t.opener: x["price"] - seller}.items() if v}
     return [t.set_flag("settled"), call("credits.pay_hold", hold=hold, split=split),
             post(t, f"Settled fetch job, bounty {bid}: {d['served']} of {d['requested']} requested pages served (2xx), {x['pages']} agreed, attestation "
-                    f"{'pass' if d['attestation_pass'] is True else 'FAIL'}; {seller} credits to the seller, {x['price'] - seller} back to the buyer." + ask_buyer(t)),
+                    f"{'pass' if d['attestation_pass'] is True else 'FAIL'}; {seller} credits to the seller, {x['price'] - seller} back to the buyer ({source})." + ask_buyer(t)),
             *ask_host(t, s)]
 
 
@@ -843,6 +878,8 @@ def settled_elsewhere(s, lease_id, here):
 
 
 def recorded(r, t, s, at):
+    if r["finding"].startswith("statement:"):
+        return bounty_settle(r["statement"], t, s, [], "pushed") if claimed(t) == r["statement"]["bounty_id"] and not t.flag("settled") else []
     if r["finding"] == "enroll" and r["state"] == "qualified" and not t.flag("enrolled"):
         a = appraisal(t)
         line = dict(
@@ -951,7 +988,8 @@ def guard_fetch(c, t, s):
         if settled_elsewhere(s, m.group(1), t.id):
             return deny("That lease already settled another escrow.")
         return allow()
-    return deny(f"Not allowed here. Before acceptance: {MARKET_URL} and {CHAIN} reads; else only this thread's own records on {RESIP}.")
+    # A run queued before settlement reads after it: say so, not "before acceptance" (QA run 8).
+    return deny("This deal is settled; post nothing.") if t.flag("settled") else deny(f"Not allowed here. Before acceptance: {MARKET_URL} and {CHAIN} reads; else only this thread's own records on {RESIP}.")
 
 
 def chain_read(url):
@@ -1034,7 +1072,7 @@ def guard_couch_terms(a, t, req):
     minutes = a.get("minutes")
     if not isinstance(minutes, int) or not 1 <= minutes <= req["minutes"]:
         return deny(f"minutes must be an integer from 1 to the {req['minutes']} the guest asked for.")
-    fixed = dict(publisher=a["publisher"].lower(), rate_nano_usd_per_second=COUCH_RATE, task=req["task"], state="proposed")
+    fixed = dict(publisher=a["publisher"].lower(), rate_nano_usd_per_second=COUCH_RATE, browse=slot.get("browse"), task=req["task"], state="proposed")
     if any(a.get(k) != v for k, v in fixed.items()):
         return modify(**{**a, **fixed})
     return allow()
@@ -1200,8 +1238,9 @@ def allocate(e, t, s):
         live = live_agents(d) - {x["agent_id"] for x in d["lines"] if (x.get("appraisal") or {}).get("guest_version", APPRAISAL_PIN[:8]) != APPRAISAL_PIN[:8]}
         return [t.set_flag("fresh:market"), *(t.set_flag("fresh:live:" + a) for a in live), *alloc_next(t, s, live)]
     line = next((v for v in lines(s).values() if verified_url(v["appraisal_id"]) == e.args["url"]), None)
+    per_gb = line and max(1, line["policy"]["floor_shared_per_gb"])
     if line and d and d.get("id") == line["appraisal_id"] and d.get("agent_id") == line["agent_id"] and fresh(d, e.at) and not busy(s, line["agent_id"], req["domains"], t.id, False):
-        terms = dict(finding="terms", state="proposed", reason="standing offer", line=line["line"], domains=req["domains"], category=req["category"], minutes=5, price=req["max_price"], price_per_gb=max(1, line["policy"]["floor_shared_per_gb"]), exclusive=False, seller=line["owner"], agent_id=line["agent_id"], basis="shared", escrow=escrow_terms(t, line, "shared", max(1, line["policy"]["floor_shared_per_gb"]), req["max_price"], 5))
+        terms = dict(finding="terms", state="proposed", reason="standing offer", line=line["line"], domains=req["domains"], category=req["category"], minutes=5, price=req["max_price"], price_per_gb=per_gb, exclusive=False, seller=line["owner"], agent_id=line["agent_id"], basis="shared", escrow=escrow_terms(t, line, "shared", per_gb, req["max_price"], 5))
         return [t.set_flag("fresh:" + line["appraisal_id"]), call("record", thread=t.id, **terms)]
     return [t.set_flag("tried:" + e.args["url"]), *alloc_next(t, s, {f[11:] for f in t.snapshot["flags"] if f.startswith("fresh:live:")}, e.args["url"])]
 

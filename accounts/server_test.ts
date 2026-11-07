@@ -174,7 +174,8 @@ Deno.test("accounts on a local chain", async (t) => {
       await refuse({ to, amount: "1" }, "can release 0");
       assertEquals((await bal()).exposure, "40000000", "still exposed during the claim grace");
 
-      await rpc("evm_increaseTime", [86401]);
+      // evm_increaseTime anchors a few seconds before the close block, which left the grace short by those seconds.
+      await rpc("evm_setNextBlockTimestamp", [closedAt + 86400 + 60]);
       await rpc("evm_mine", []);
       const after = await bal();
       assertEquals([after.releasable, after.exposure, after.withdrawable], [[H1], "10000000", "30000000"]);
@@ -212,6 +213,28 @@ Deno.test("accounts on a local chain", async (t) => {
       assertEquals((await req(s, "/export", { confirm: "alice@example.com", challenge_id: id, code: "123456" }, a.session)).status, 401, "a code works once");
       assert(b.address !== a.address);
       assert(b.starter.skipped.includes("not a member"), "no starter credit for an email the doorman never invited");
+    });
+
+    await t.step("an RPC that answers null every other read, and loses a broadcast's reply, still accepts and closes once", async () => {
+      let n = 0, lost = 0;
+      const flaky = Deno.serve({ port: 0, onListen() {} }, async (r) => {
+        const b = await r.json();
+        if (["eth_call", "eth_getBlockByNumber", "eth_getTransactionCount"].includes(b.method) && n++ % 2 === 0) return Response.json({ jsonrpc: "2.0", id: b.id, result: null });
+        const out = await (await fetch(RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) })).json();
+        if (b.method === "eth_sendRawTransaction" && lost++ === 0) return Response.json({ jsonrpc: "2.0", id: b.id, result: null });
+        return Response.json(out);
+      });
+      const env = s.ctx.env as Record<string, string>, real = env.RPC;
+      env.RPC = `http://127.0.0.1:${flaky.addr.port}`;
+      try {
+        const d = await signIn(s, "dora@example.com"), H7 = "0x" + "7".repeat(64);
+        const a = await req(s, "/accept", { termsHash: H7, operator: OP, cap: "1000000", deposit: "1000000" }, d.session);
+        assertEquals([a.status, a.body.exposure], [200, "1000000"], JSON.stringify(a.body));
+        assert(lost > 1, "a lost broadcast reply was confirmed by its receipt, and later sends went on");
+        assertEquals((await view(s.escrow, "terms", [d.address, H7]))[0], OP);
+        const c = await req(s, "/close", { termsHash: H7 }, d.session);
+        assertEquals([c.status, c.body.tx.fn], [200, "closeTermsFor"], JSON.stringify(c.body));
+      } finally { env.RPC = real; await flaky.shutdown(); }
     });
 
     await t.step("relay/claim pays the terms' operator from a site statement once; a forged claim sends nothing", async () => {

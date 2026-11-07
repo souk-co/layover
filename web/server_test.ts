@@ -1,6 +1,6 @@
 // deno test -A --no-check web/server_test.ts (verify.ts has pre-existing type errors)
-import { assertEquals, assertRejects } from "jsr:@std/assert@1";
-import { BROKER_FLEET, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, INDEX_MAX, LAYC, LOG_SPAN, handler, PROBE_EXPIRE_MS, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
+import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
+import { BROKER_FLEET, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, handler, hostLevel, PROBE_EXPIRE_MS, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
 
 Deno.test("a probe request unanswered for 10 minutes after filing is expired, pass false; a newer one stays open", async () => {
   const dataDir = await Deno.makeTempDir(), ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -110,6 +110,40 @@ Deno.test("a declined bounty's statement is pushed to the souk as the doorman's 
   }
 });
 
+Deno.test("a bounty result whose pushed statement fails to build writes no record; a good result is written once and a failed push cannot undo it", async () => {
+  const dataDir = await Deno.makeTempDir(), id = "00000000-0000-4000-8000-0000000000b4", calls: { url: string; body: any }[] = [];
+  configure({ verify: (async () => ({ ok: true, mode: null, facts: { key_id: "k", manifest_sha256: "m", os_image_hash: "o", run: "r" }, checks: [], checked_at: "" })) as never });
+  const att = (await Deno.readTextFile(new URL(import.meta.url))).match(/const att = "([0-9a-f]+)"/)![1];
+  await Deno.writeTextFile(dataDir + "/records.jsonl", [
+    { kind: "agent", agent_id: "line-a", enc_pub: "77".repeat(32), attestation: att, coarse: { region: "r", isp_class: "c", residential: true } },
+    { kind: "bounty", id, agent_id: "line-a", buyer_key: "thread-4", at: new Date().toISOString() },
+    { kind: "decision", bounty_id: id, decision: "accept", reason: "ok", at: new Date().toISOString() },
+  ].map((r) => JSON.stringify(r) + "\n").join(""));
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => { calls.push({ url, body: JSON.parse(init.body as string) }); return Response.json({}); }) as typeof fetch;
+  const post = (items: unknown[]) => handler(new Request(`http://x/api/bounties/${id}/result`, { method: "POST", body: JSON.stringify({ result: { bounty_id: id, items }, attestation: "abcd" }) }), { dataDir, env: { SOUK_DOORMAN_CREDENTIAL: "doorman-token" } });
+  const kinds = async () => (await Deno.readTextFile(dataDir + "/records.jsonl")).trim().split("\n").map((l) => JSON.parse(l).kind);
+  try {
+    // A null item breaks the statement's served count, so building the statement fails: today the error escapes the handler
+    // and the input-validation fix will answer 400 instead - either way the POST fails, and because the statement is built
+    // before the write, the failed POST leaves the log untouched and the bounty still accepted.
+    const failed = await post([null, { status: 200 }]).then((r) => r.ok, () => false);
+    assertEquals(failed, false, "the statement build failed before the write, so the POST must not succeed");
+    assertEquals(await kinds(), ["agent", "bounty", "decision"]);
+    assertEquals((await (await handler(new Request(`http://x/api/bounties/${id}`), { dataDir })).json()).status, "accepted");
+    const r = await post([{ status: 200 }, { status: 403 }, { status: 302 }]);
+    assertEquals(r.status, 200);
+    const again = await post([]);
+    assertEquals([again.status, (await again.json()).error], [400, "bounty is done, not accepted"]);
+    assertEquals((await kinds()).filter((k) => k === "result").length, 1);
+    const st = await (await handler(new Request(`http://x/api/bounties/${id}/statement`), { dataDir })).json();
+    assertEquals([st.status, st.requested, st.served, st.attestation_pass], ["done", 3, 1, true]);
+    assertEquals([calls.length, calls[0].url, calls[0].body.kind, JSON.parse(calls[0].body.text).bounty_id], [1, SOUK_URL + "/api/souk_send", "statement", id]);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 Deno.test("kit: the Layover skill, its line client under both names, and the couch client files are served", async () => {
   const dataDir = await Deno.makeTempDir(), get = (p: string) => handler(new Request("http://x" + p), { dataDir });
   assertEquals((await (await get("/kit/")).text()).startsWith("Layover"), true);
@@ -145,28 +179,88 @@ Deno.test("kit: SKILL.md's couch download lists name every file under static/kit
   assertEquals(new Set(listed), new Set(await walk("couch/")));
 });
 
-Deno.test("couch-slots is the broker's /fleet as one small row per slot", async () => {
-  const fleet = await (await fetch(BROKER_FLEET)).text();
-  const real = globalThis.fetch;
-  globalThis.fetch = (u) => { assertEquals(String(u), BROKER_FLEET); return Promise.resolve(new Response(fleet)); };
-  try {
-    const res = await handler(new Request("http://x/api/couch-slots"), { dataDir: await Deno.makeTempDir() });
-    const body = await res.text(), slots = JSON.parse(body), macs = JSON.parse(fleet);
-    assertEquals(slots.length, macs.reduce((n: number, m: { slots: unknown[] }) => n + m.slots.length, 0));
-    assertEquals(Object.keys(slots[0]), ["publisher", "chip", "online", "updated_at", "vcpus", "mem_mib", "browse", "slot_id", "state", "unreachable", "last_error_code", "run_id", "verified", "handoverAt", "started_at", "jobs_served", "online_share"]);
-    const s = macs[0].slots[0];
-    assertEquals([slots[0].slot_id, slots[0].run_id, slots[0].handoverAt, slots[0].verified], [s.slot_id, s.run_id, s.attestation?.admit_until ?? null, s.attestation?.attestation?.status === "verified"]);
-    // started_at (slot run start) and jobs_served (stays served) pass through so supply has timestamps and stay counts.
-    assertEquals([slots[0].started_at, slots[0].jobs_served], [s.started_at ?? null, s.jobs_served ?? null]);
-    // The host's posted browse policy and surcharge, which the amin checks a stay's rate against.
-    const b = macs[0].config.browse;
-    assertEquals(slots[0].browse, b ? { default: b.default, open: Number(b.price.open_nano_usd_per_second), named: Number(b.price.named_host_nano_usd_per_second) } : null);
-    assertEquals(body.includes(macs[0].hardware.name), false);
-    console.log(`fleet ${fleet.length} B -> couch-slots ${body.length} B`);
-    if (body.length > 4096) throw new Error(`couch-slots is ${body.length} B`);
-  } finally {
-    globalThis.fetch = real;
+// Both curl lists in SKILL.md (the kit's own and the couch one), each name prefixed with its kit/ directory.
+const downloadLists = async () => {
+  const skill = await Deno.readTextFile(new URL("./static/kit/SKILL.md", import.meta.url).pathname);
+  return [...skill.matchAll(/kit\/((?:couch\/(?:dsmack\/)?)?)\{([^}]+)\}/g)].flatMap((m) => m[2].split(",").map((f) => m[1] + f));
+};
+
+Deno.test("kit: every file the download lists and the serving manifest name exists (deploy-built files excepted)", async () => {
+  const root = new URL("./static/kit/", import.meta.url).pathname;
+  // layover.js serves resip.js through server.ts's alias map, and deploy.py builds resip.js from buyer/resip.ts; neither is in the repo.
+  const alias: Record<string, string> = Object.fromEntries([...(await Deno.readTextFile(new URL("./server.ts", import.meta.url).pathname))
+    .matchAll(/"kit\/([a-z.]+)": "kit\/([a-z.]+)"/g)].map((m) => [m[1], m[2]]));
+  const built = new Set([...(await Deno.readTextFile(new URL("./deploy.py", import.meta.url).pathname))
+    .matchAll(/add\(tar, "static\/(kit\/[^"]+)"/g)].map((m) => m[1].slice("kit/".length)));
+  const exists = async (f: string) => { try { await Deno.stat(root + f); return true; } catch { return false; } };
+  const served = [...await downloadLists(), ...Object.keys(kit).map((k) => k.slice("kit/".length))];
+  for (const f of new Set(served)) {
+    const target = alias[f] ?? f;
+    assertEquals(await exists(f) || await exists(target) || built.has(f) || built.has(target), true, `${f} is listed but nothing serves or builds it`);
   }
+});
+
+Deno.test("kit: every file the kit's own scripts import or read is in the download lists", async () => {
+  const root = new URL("./static/kit/", import.meta.url).pathname, listed = new Set(await downloadLists());
+  const built = new Set([...(await Deno.readTextFile(new URL("./deploy.py", import.meta.url).pathname))
+    .matchAll(/add\(tar, "static\/(kit\/[^"]+)"/g)].map((m) => m[1].slice("kit/".length)));
+  const walk = async (d: string): Promise<string[]> =>
+    (await Promise.all((await Array.fromAsync(Deno.readDir(root + d))).map((e) => e.isDirectory ? walk(d + e.name + "/") : [d + e.name]))).flat();
+  const resolve = (from: string, spec: string) => {
+    const parts = (from.split("/").slice(0, -1).concat(spec.split("/"))), out: string[] = [];
+    for (const p of parts) p === "." || p === "" ? undefined : p === ".." ? out.pop() : out.push(p);
+    return out.join("/");
+  };
+  const needed: [string, string][] = [];
+  for (const f of (await walk("")).filter((f) => !f.includes("__pycache__/"))) {
+    const src = await Deno.readTextFile(root + f);
+    // module imports (static and dynamic) and files read next to the script resolve against the file; $K paths in the skills' instructions are kit-root paths
+    if (/\.(mjs|js)$/.test(f)) for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)\b[^;'"]*?["'](\.{1,2}\/[^"']+)["']|import\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)|new URL\(\s*["'](\.[^"']+)["']\s*,\s*import\.meta\.url\s*\)/g))
+      needed.push([f, resolve(f, m[1] ?? m[2] ?? m[3])]);
+    if (f.endsWith("SKILL.md")) for (const m of src.matchAll(/\$K\/([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)/g)) needed.push([f, m[1]]);
+  }
+  for (const [from, f] of needed) {
+    assertEquals(f.startsWith("../"), false, `${from} references a file outside the kit`);
+    // a curl --output-dir target names the directory the files land in, not a file to download
+    if (await Deno.stat(root + f).then((s) => s.isDirectory).catch(() => false)) continue;
+    assertEquals(listed.has(f) || built.has(f), true, `${from} needs ${f}, which no download list names: a cold buyer's copy is incomplete`);
+  }
+});
+
+Deno.test("kit: souk.py's sign-in prompts name account login for buyers and souk.py login for hosts", async () => {
+  const root = new URL("./static/kit/", import.meta.url).pathname;
+  const souk = await Deno.readTextFile(root + "souk.py");
+  const both = "account login EMAIL (buyers, per SKILL.md) or souk.py login <url> <email> (hosts, per HOSTING.md)";
+  assertEquals([souk.includes("Run: " + both), souk.includes("sign in again with: " + both)], [true, true]);
+  assertEquals(souk.includes("souk.py login {url} {email} <code>"), true);
+});
+
+Deno.test({
+  name: "couch-slots is the broker's /fleet as one small row per slot (live network; set LAYOVER_LIVE_TESTS=1 to run)",
+  ignore: Deno.env.get("LAYOVER_LIVE_TESTS") !== "1",
+  fn: async () => {
+    const fleet = await (await fetch(BROKER_FLEET)).text();
+    const real = globalThis.fetch;
+    globalThis.fetch = (u) => { assertEquals(String(u), BROKER_FLEET); return Promise.resolve(new Response(fleet)); };
+    try {
+      const res = await handler(new Request("http://x/api/couch-slots"), { dataDir: await Deno.makeTempDir() });
+      const body = await res.text(), slots = JSON.parse(body), macs = JSON.parse(fleet);
+      assertEquals(slots.length, macs.reduce((n: number, m: { slots: unknown[] }) => n + m.slots.length, 0));
+      assertEquals(Object.keys(slots[0]), ["publisher", "chip", "online", "updated_at", "vcpus", "mem_mib", "browse", "slot_id", "state", "unreachable", "last_error_code", "run_id", "verified", "handoverAt", "started_at", "jobs_served", "online_share"]);
+      const s = macs[0].slots[0];
+      assertEquals([slots[0].slot_id, slots[0].run_id, slots[0].handoverAt, slots[0].verified], [s.slot_id, s.run_id, s.attestation?.admit_until ?? null, s.attestation?.attestation?.status === "verified"]);
+      // started_at (slot run start) and jobs_served (stays served) pass through so supply has timestamps and stay counts.
+      assertEquals([slots[0].started_at, slots[0].jobs_served], [s.started_at ?? null, s.jobs_served ?? null]);
+      // The host's posted browse policy and surcharge, which the amin checks a stay's rate against.
+      const b = macs[0].config.browse;
+      assertEquals(slots[0].browse, b ? { default: b.default, open: Number(b.price.open_nano_usd_per_second), named: Number(b.price.named_host_nano_usd_per_second) } : null);
+      assertEquals(body.includes(macs[0].hardware.name), false);
+      console.log(`fleet ${fleet.length} B -> couch-slots ${body.length} B`);
+      if (body.length > 4096) throw new Error(`couch-slots is ${body.length} B`);
+    } finally {
+      globalThis.fetch = real;
+    }
+  },
 });
 
 Deno.test("couch-slots does not offer a slot whose last relay hop the broker was refused", async () => {
@@ -196,6 +290,56 @@ Deno.test("couch-slots counts, per publisher, the /fleet reads that found it onl
     const c = await read();
     assertEquals([b.samples - a.samples, b.online - a.online, c.samples - a.samples, c.online - a.online], [1, 0, 2, 1]);
     assertEquals(isNaN(Date.parse(c.since)), false);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+Deno.test("host levels: each preset expands to its card fields; an explicit host field overrides it; a bad level or field is rejected", () => {
+  // The four presets of #153's table; nothing changes in core, a host can edit any field after picking one.
+  assertEquals(HOST_LEVELS, {
+    air_mattress: { availability: { kind: "lid_open", leave_notice_s: 300 }, slots: { min: 1, max: 1 }, max_stay_s: 3600, perks: [] },
+    futon: { availability: { kind: "hours", hours: ["22:00", "08:00"] }, slots: { min: 1, max: 2 }, max_stay_s: 28800, perks: ["browse_package_hosts"] },
+    guest_room: { availability: { kind: "always" }, slots: { min: 3, max: 4 }, max_stay_s: 259200, perks: ["browse_package_hosts", "home_line"] },
+    suite: { availability: { kind: "always" }, slots: { min: 4, max: null }, max_stay_s: 604800, perks: ["line", "vpn_exit", "ai_plan_allowance", "open_browse"] },
+  });
+  assertEquals(hostLevel({ level: "guest_room" }), { level: "guest_room", availability: { kind: "always" }, slots: { min: 3, max: 4 }, max_stay_s: 259200, perks: ["browse_package_hosts", "home_line"] });
+  // Only the fields the host posted change; a perks list replaces the preset's rather than merging with it.
+  assertEquals(hostLevel({ level: "futon", max_stay_s: 14400, slots: { min: 2, max: 2 } }), { level: "futon", availability: { kind: "hours", hours: ["22:00", "08:00"] }, slots: { min: 2, max: 2 }, max_stay_s: 14400, perks: ["browse_package_hosts"] });
+  assertEquals(hostLevel({ level: "suite", availability: { kind: "hours", hours: ["09:00", "21:00"] } }), { level: "suite", availability: { kind: "hours", hours: ["09:00", "21:00"] }, slots: { min: 4, max: null }, max_stay_s: 604800, perks: ["line", "vpn_exit", "ai_plan_allowance", "open_browse"] });
+  for (const [bad, error] of [
+    [{ level: "penthouse" }, 'level: "penthouse" is not one of air_mattress, futon, guest_room, suite'],
+    [{ level: ["suite"] }, 'level: ["suite"] is not one of air_mattress, futon, guest_room, suite'],
+    [{ level: "constructor" }, 'level: "constructor" is not one of air_mattress, futon, guest_room, suite'],
+    [{ level: "futon", max_stay_s: "forever" }, "max_stay_s: whole seconds"],
+    [{ level: "futon", availability: { kind: "nights" } }, "availability.kind: one of lid_open, hours, always"],
+    [{ level: "suite", availability: { kind: "hours", hours: ["overnight"] } }, 'availability.hours: ["HH:MM", "HH:MM"], e.g. ["22:00", "08:00"]'],
+    [{ level: "suite", slots: { min: 0, max: 4 } }, "slots: {min >= 1, max >= min or null for no ceiling}"],
+  ] as [Rec, string][]) assertThrows(() => hostLevel(bad), Error, error);
+});
+
+Deno.test("couch-slots: a leveled host's rows carry level and its expanded fields, an unleveled host's row is unchanged, a bad card is card_error on its rows only", async () => {
+  const fleet = [
+    { publisher: "0xsuite", hardware: { chip: "M4" }, online: true, updated_at: 1, config: { guest: { vcpus: 2, mem_mib: 4096 }, host: { level: "suite", perks: ["line", "vpn_exit"] } }, slots: [{ slot_id: 0, state: "ready" }, { slot_id: 1, state: "ready" }] },
+    { publisher: "0xplain", hardware: { chip: "M3" }, online: true, updated_at: 1, config: { guest: { vcpus: 1, mem_mib: 4096 } }, slots: [{ slot_id: 0, state: "ready", last_error_code: null, run_id: null }] },
+  ];
+  const real = globalThis.fetch, get = async () => await handler(new Request("http://x/api/couch-slots"), { dataDir: await Deno.makeTempDir() });
+  globalThis.fetch = () => Promise.resolve(Response.json(fleet));
+  try {
+    const slots = await (await get()).json();
+    assertEquals(slots.length, 3);
+    // The buyer side reads availability, slots and max stay from these expanded fields, not the level name.
+    for (const s of slots.slice(0, 2)) assertEquals([s.level, s.availability, s.slots, s.max_stay_s, s.perks], ["suite", { kind: "always" }, { min: 4, max: null }, 604800, ["line", "vpn_exit"]]);
+    assertEquals(Object.keys(slots[0]).slice(6, 12), ["browse", "level", "availability", "slots", "max_stay_s", "perks"]);
+    assertEquals(Object.keys(slots[2]), ["publisher", "chip", "online", "updated_at", "vcpus", "mem_mib", "browse", "slot_id", "state", "unreachable", "last_error_code", "run_id", "verified", "handoverAt", "started_at", "jobs_served", "online_share"]);
+    // A host whose card fails to expand does not hide the others: the listing answers 200, its rows are today's plus card_error.
+    fleet[0].config.host.level = "penthouse";
+    const res = await get(), rows = await res.json();
+    assertEquals(res.status, 200);
+    assertEquals(rows.length, 3);
+    for (const r of rows.slice(0, 2)) assertEquals([r.card_error, r.level], ['level: "penthouse" is not one of air_mattress, futon, guest_room, suite', undefined]);
+    assertEquals(Object.keys(rows[0]).slice(6, 8), ["browse", "card_error"]);
+    assertEquals(rows[2].card_error, undefined);
   } finally {
     globalThis.fetch = real;
   }
@@ -533,4 +677,77 @@ Deno.test("an upstream that does not answer in time is a 502 naming it, not a 50
   } finally {
     globalThis.fetch = real;
   }
+});
+
+Deno.test("JSON endpoints: wrong types, missing fields, malformed and oversized bodies answer 4xx with a named error, not a 500", async () => {
+  const dataDir = await Deno.makeTempDir(), open = "00000000-0000-4000-8000-0000000000b5", taken = "00000000-0000-4000-8000-0000000000b6",
+    d1 = "00000000-0000-4000-8000-0000000000d1";
+  configure({ custody: "http://custody/", verify: (async () => ({ ok: true, mode: null, facts: { key_id: "k", manifest_sha256: "m", os_image_hash: "o", run: "r" }, checks: [], checked_at: "" })) as never });
+  const att = (await Deno.readTextFile(new URL(import.meta.url))).match(/const att = "([0-9a-f]+)"/)![1];
+  await Deno.writeTextFile(dataDir + "/records.jsonl", [
+    { kind: "agent", agent_id: "line-a", enc_pub: "77".repeat(32), attestation: att, coarse: { region: "r", isp_class: "c", residential: true } },
+    { kind: "bounty", id: open, agent_id: "line-a", buyer_key: "t", at: new Date().toISOString() },
+    { kind: "bounty", id: taken, agent_id: "line-a", buyer_key: "t", at: new Date().toISOString() },
+    { kind: "decision", bounty_id: taken, decision: "accept", reason: "ok", at: new Date().toISOString() },
+    { kind: "appraisal_request", id: "00000000-0000-4000-8000-0000000000c1", agent_id: "line-a", at: new Date().toISOString() },
+    // an active lease, so the vantage row below reaches the vantage field guard and not "no such lease"
+    { kind: "lease", id: d1, agent_id: "line-a", account: "cd".repeat(32), deposit: 5, at: new Date().toISOString() },
+    { kind: "lease_decision", lease_id: d1, agent_id: "line-a", decision: "accept", reason: "ok", price_per_gb: 400, term_end: "2026-11-06T23:59:00Z", at: new Date().toISOString() },
+  ].map((r) => JSON.stringify(r) + "\n").join(""));
+  const enc = { epk: "11".repeat(32), nonce: "22".repeat(12), ct: "33".repeat(40) }, bearer = { authorization: "Bearer " + "ab".repeat(32) };
+  const cases: [string, unknown, Record<string, string>][] = [
+    ["/api/signup", {}, {}],
+    ["/api/signup", { email: "a@b.co", role: "arbiter" }, {}],
+    ["/api/signup", { email: "e".repeat(250) + "@x.co", role: "buyer" }, {}],  // oversized field
+    ["/api/signup", "{not json", {}],
+    ["/api/relay/open", { agent_id: 42 }, {}],
+    ["/api/relay/open", "{not json", {}],
+    ["/api/agents", { agent_id: 5 }, {}],
+    ["/api/agents", { agent_id: "test-x", enc_pub: "zz", coarse: { region: "r", isp_class: "c", residential: true }, attestation: "ab" }, {}],
+    ["/api/agents/line-a/appraisal-requests", { requested_by: "x".repeat(201) }, {}],  // oversized field
+    ["/api/appraisal-requests/00000000-0000-4000-8000-0000000000c1/failure", { error: "x".repeat(301) }, {}],  // oversized field
+    ["/api/bounties", { agent_id: "line-a", buyer_key: "t".repeat(201), enc }, {}],  // oversized field
+    ["/api/bounties", { agent_id: "line-a", buyer_key: "t", enc: { epk: "nope" } }, {}],
+    [`/api/bounties/${open}/decision`, { decision: "maybe", reason: "x" }, {}],
+    [`/api/bounties/${open}/decision`, { decision: "accept" }, {}],
+    [`/api/bounties/${taken}/result`, { result: { bounty_id: taken }, attestation: "abcd" }, {}],
+    ["/api/leases", { agent_id: "line-a", exclusive: "yes", enc }, bearer],
+    [`/api/leases/${d1}/vantage`, { at: 1 }, {}],
+    ["/api/accounts/faucet", {}, {}],
+    ["/api/minion/rows", { row_json: 7, sig: "00".repeat(64) }, {}],
+  ];
+  const post = (p: string, body: unknown, headers: Record<string, string> = {}) =>
+    handler(new Request("http://x" + p, { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) }), { dataDir });
+  for (const [p, body, headers] of cases) {
+    const r = await post(p, body, headers), out = await r.json();
+    assertEquals(r.status >= 400 && r.status < 500, true, `${p} ${JSON.stringify(body).slice(0, 60)} answered ${r.status}`);
+    assertEquals(typeof out.error === "string" && out.error.length > 0, true, `${p} answered ${r.status} with no error`);
+  }
+  const big = await post("/api/signup", "{".repeat(1024 * 1024));  // an oversized body is parsed, not crashed on
+  assertEquals(big.status, 400);
+});
+
+// Real bug, unfixed: api() (server.ts:399 and every route that reads body fields), signup() (server.ts:758) and relay()'s /open
+// (server.ts:334) destructure the parsed body, so a JSON null body throws a TypeError out of the handler - a 500 in production -
+// and a bounty result item that is not an object reaches bountyStatement's item scan the same way (server.ts:589 checks only
+// Array.isArray; the scan at server.ts:119 throws). The separate validation fix turns both into 400s; un-ignore when it lands.
+Deno.test({
+  name: "JSON endpoints: a null body and a non-object result item are a 4xx, not a TypeError 500 (IGNORED: server.ts:334, 399, 758 destructure a null body; server.ts:589 leaves result items unvalidated)",
+  ignore: true,
+  async fn() {
+    const dataDir = await Deno.makeTempDir(), id = "00000000-0000-4000-8000-0000000000b7";
+    configure({ custody: "http://custody/", verify: (async () => ({ ok: true, mode: null, facts: { key_id: "k", manifest_sha256: "m", os_image_hash: "o", run: "r" }, checks: [], checked_at: "" })) as never });
+    const att = (await Deno.readTextFile(new URL(import.meta.url))).match(/const att = "([0-9a-f]+)"/)![1];
+    await Deno.writeTextFile(dataDir + "/records.jsonl", [
+      { kind: "agent", agent_id: "line-a", enc_pub: "77".repeat(32), attestation: att, coarse: { region: "r", isp_class: "c", residential: true } },
+      { kind: "bounty", id, agent_id: "line-a", buyer_key: "t", at: new Date().toISOString() },
+      { kind: "decision", bounty_id: id, decision: "accept", reason: "ok", at: new Date().toISOString() },
+    ].map((r) => JSON.stringify(r) + "\n").join(""));
+    const post = (p: string, body: unknown) => handler(new Request("http://x" + p, { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) }), { dataDir });
+    for (const [p, body] of [["/api/signup", "null"], ["/api/bounties", "null"], ["/api/relay/open", "null"], ["/api/minion/rows", "null"],
+      [`/api/bounties/${id}/result`, { result: { bounty_id: id, items: [null] }, attestation: "abcd" }]] as [string, unknown][]) {
+      const r = await post(p, body);
+      assertEquals(r.status >= 400 && r.status < 500, true, `${p} answered ${r.status}`);
+    }
+  },
 });

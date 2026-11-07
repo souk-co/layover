@@ -1,0 +1,7 @@
+**
+!minion/
+!minion/units.py
+!minion/keychain.py
+!minion/cvm/
+!minion/cvm/service.py
+!minion/cvm/requirements.txt

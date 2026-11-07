@@ -1,0 +1,3 @@
+dstack-sdk==0.5.4
+eth-account==0.14.0
+cryptography==50.0.2

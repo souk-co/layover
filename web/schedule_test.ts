@@ -39,7 +39,11 @@ Deno.test("scan stops at upTo without deciding, and resumes", async () => {
   assertEquals((await scan(from, "x", PROBE, part.scanned + 1, Infinity, fake)).next, all.next);
 });
 
-Deno.test("live drand round", async () => {
-  const x = await randomness(roundAt(Date.now()) - 2);
-  assertEquals(x.length, 64);
+Deno.test({
+  name: "live drand round (live network; set LAYOVER_LIVE_TESTS=1 to run)",
+  ignore: Deno.env.get("LAYOVER_LIVE_TESTS") !== "1",
+  fn: async () => {
+    const x = await randomness(roundAt(Date.now()) - 2);
+    assertEquals(x.length, 64);
+  },
 });

@@ -13,6 +13,15 @@ used.
 
 ## Tests
 
+`DSMACK=/path/to/dsmack ./test.sh` runs the main suites, including from a public
+export. Install Node/npm, Deno, uv, Go and Foundry (`anvil` and `forge`) on PATH.
+Use a dsmack revision containing `applications/payments/guest/cmd/check-manifest`
+and initialize its submodules (`git submodule update --init --recursive`). The
+script installs npm dependencies and uses uv for Python 3.11 and test packages.
+
+The web branch's live drand and broker tests require `LAYOVER_LIVE_TESTS=1`;
+without it they are skipped with an opt-in message.
+
 Run what your change touches before pushing:
 
 ```

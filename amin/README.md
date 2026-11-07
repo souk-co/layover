@@ -14,7 +14,7 @@ The journeys and pass criteria are in `../notes/journeys.html`.
   files against the commit above, carry changes into `prompts/charter.md`, set `NIKETE_COMMIT` in `build.py`, and
   `python3 build.py revise SOUK`.
 - Program written against souk-co/souk `dev` at `4a89f08` (host SDK, credits kit, dining-matching's hold pattern).
-- Appraisal minion pin: souk-co/layover-private branch `guest` at `a7641458731d332588b8b17650bfb1dcac2babd4`
+- Appraisal minion pin: the private guest branch at `a7641458731d332588b8b17650bfb1dcac2babd4`
   (`APPRAISAL_PIN` in `build.py`). Moving the pin is a souk revision.
 - Endpoint shapes: lane C, `../notes/amin-endpoints-handoff.md` (branch `amin-endpoints`).
 

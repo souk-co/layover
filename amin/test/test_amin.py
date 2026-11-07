@@ -499,6 +499,29 @@ def test_no_refresh_unless_only_the_key_rotated(e, monkeypatch, kw):
     assert [x["appraisal_id"] for x in lines(e)] == [A_OK]
 
 
+def pin_moved(monkeypatch, requested_by="resip-staging scheduler"):
+    """The enrolled appraisal still names the guest the line enrolled on; the pin has moved and a newer appraisal on the new pin exists."""
+    old = json.loads(json.dumps(FIXTURES[f"/api/appraisals/{A_OK}/verified"])) | {"guest_version": "810fcab9"}
+    new = json.loads(json.dumps(FIXTURES[f"/api/appraisals/{A_OK}/verified"])) | {"id": A_NEW, "request_id": R_NEW, "at": "2026-11-06T15:15:30.000Z"}
+    monkeypatch.setitem(FIXTURES, f"/api/appraisals/{A_OK}/verified", old)
+    monkeypatch.setitem(FIXTURES, f"/api/appraisals/{A_NEW}/verified", new)
+    monkeypatch.setitem(FIXTURES, "/api/agents/resip-mini-1/appraisals?limit=1", [new])
+    monkeypatch.setitem(FIXTURES, f"/api/appraisal-requests/{R_NEW}", dict(id=R_NEW, agent_id="resip-mini-1", requested_by=requested_by, status="done", appraisal_id=A_NEW, error=None))
+    monkeypatch.setitem(FIXTURES, "/api/agents/resip-mini-1/probes?limit=3", [probe(1)])
+
+
+@pytest.mark.xfail(reason="repro #122: a pin bump leaves the line on the appraisal it enrolled with (refresh covers only an App Attest failure), so every fetch on it is refused")
+def test_line_moves_to_its_newest_appraisal_after_a_pin_move(e, monkeypatch):
+    line = enroll(e)
+    pin_moved(monkeypatch)
+    qa_refresh(e)
+    assert [x["appraisal_id"] for x in lines(e)][-1] == A_NEW
+    t = lease_thread(e)
+    verify(e, t, A_NEW)
+    assert not denied(e, t, "record", terms(line))
+    agent(e)
+
+
 def test_qa_delists_and_relists(e):
     line = enroll(e)
     url = "/api/agents/resip-mini-1/probes?limit=3"
@@ -538,11 +561,15 @@ def test_failed_statement_fetch_still_rechecks(e):
     missing = "b0000000-0000-4000-8000-000000000099"
     send(e, "B", f"lease {missing}", thread=t)
     agent(e, ("runtime.web_fetch", dict(url=f"{RESIP}/api/leases/{missing}/statement")))
-    queued = len(e.rows("runs"))
+    runs = lambda: len([r for r in e.rows("runs").values() if r["thread"] == t])
+    queued = runs()
     e.advance(400)
-    assert len(e.rows("runs")) == queued + 1
-    e.advance(800)
-    assert len(e.rows("runs")) == queued + 2
+    assert runs() == queued + 1
+    e.advance(800)  # one poll run at a time: the queued one has not run yet
+    assert runs() == queued + 1
+    agent(e, ("runtime.web_fetch", dict(url=f"{RESIP}/api/leases/{missing}/statement")))
+    e.advance(1200)
+    assert runs() == queued + 2
 
 
 def test_rotating_line_not_delisted_for_new_address(e):
@@ -706,6 +733,64 @@ def test_fetch_job_fetches_only_the_named_bounty(e):
     assert denied(e, t, "runtime.web_fetch", dict(url=other))
 
 
+SITE = __import__("re").search(r'^SITE = "(.*)"', (HERE.parent / "souk.py").read_text(), __import__("re").M).group(1)
+
+
+def push(e, bid, person=SITE):
+    if person not in {m for m in e.store.view(e.souk)["members"]}:
+        join(e, person, ("host", "buyer"))  # the doorman holds both roles
+    send(e, person, json.dumps(FIXTURES[f"/api/bounties/{bid}/statement"]), kind="statement")
+
+
+def queued(e):
+    return [r for r in e.rows("runs").values() if r["state"] == "queued"]
+
+
+def test_fetch_job_settles_on_the_sites_push_without_a_run(e):
+    t = fetch_deal(e, enroll(e))
+    bid = bounty(t, 1, served=4)
+    runs = len(e.rows("runs"))
+    push(e, bid)  # before the buyer names it: kept, not settled
+    assert ledger(e)["accounts"]["B"] == 999 and len(e.rows("runs")) == runs
+    send(e, "B", f"bounty {bid}", thread=t)  # settles in the program step, no run
+    assert ledger(e)["accounts"] == {"H": 1001, "B": 999, "Arb": 1000} and len(e.rows("runs")) == runs
+    assert f"Settled fetch job, bounty {bid}: 4 of 5" in said(e, t) and "(pushed)" in said(e, t)
+    push(e, bid)
+    assert said(e, t).count("Settled fetch job") == 1 and ledger(e)["accounts"]["H"] == 1001
+    t2 = fetch_deal(e, lines(e)[0]["line"])  # named first, pushed after
+    send(e, "B", f"bounty {bounty(t2, 2)}", thread=t2)
+    push(e, "d0000000-0000-4000-8000-000000000002")
+    assert "(pushed)" in said(e, t2)
+
+
+def test_fetch_job_push_settles_only_the_named_bounty(e):
+    t = fetch_deal(e, enroll(e))
+    push(e, bounty(t, 1), person="B")
+    assert "only the site pushes statements" in json.dumps(e.inbox("B")) and ledger(e)["accounts"]["B"] == 999
+    push(e, bounty(t, 3, key=t))  # anyone can post a bounty under this thread's key: unnamed, it settles nothing
+    push(e, bounty(t, 4, status="declined"))
+    assert "Settled fetch job" not in said(e, t) and "was declined" not in said(e, t) and ledger(e)["accounts"]["B"] == 999
+    send(e, "B", f"bounty {bounty(t, 2, status='accepted')}", thread=t)
+    push(e, bounty(t, 2, status="declined"))
+    assert "Bounty d0000000-0000-4000-8000-000000000002 was declined" in said(e, t) and ledger(e)["accounts"]["B"] == 1000
+
+
+def test_fetch_job_poll_is_visible_one_run_at_a_time_and_quiet_after_settling(e):
+    t = fetch_deal(e, enroll(e))
+    bid = "d0000000-0000-4000-8000-000000000008"
+    FIXTURES.pop(f"/api/bounties/{bid}/statement", None)
+    named(e, t, bid)
+    assert f"Reading bounty {bid}'s statement failed (not found)" in said(e, t)
+    for at in (75, 140, 205):  # the host is busy: no run executes between timers
+        e.advance(at)
+        e.deliver()
+    assert len([r for r in queued(e) if r["thread"] == t]) == 1
+    push(e, bounty(t, 8))
+    agent(e, ("runtime.web_fetch", dict(url=f"{RESIP}/api/bounties/{bid}/statement")))  # the poll run queued before settlement
+    assert "This deal is settled; post nothing" in denied(e, t, "runtime.web_fetch", dict(url=f"{RESIP}/api/bounties/{bid}/statement"))
+    assert said(e, t).count("failed") == 1 and said(e, t).count("Settled") == 1
+
+
 def test_exclusive_lease_blocks_fetch_job(e):
     line = enroll(e, owner_reported=dict(cgnat=False))
     send(e, "B", json.dumps(dict(domains=["www.redfin.com"], category="price_check", minutes=30, max_price=40, exclusive=True)), kind="lease")
@@ -750,13 +835,14 @@ def test_couch_propose_accept_settle_moves_no_credits(e):
     assert (terms["publisher"], terms["slot_id"], terms["rate_nano_usd_per_second"], terms["task"]) == (MAC, 3, 15000, "build and test a Rust crate")
     posts = json.dumps(e.read(t, "B"))
     assert 'stay_open {\\"publisher\\": \\"' + MAC + '\\", \\"slot_id\\": 3, \\"conversation_id\\": \\"' + t in posts
+    assert "15000 nano-USD per active guest second ($0.0009 per minute, 60 s minimum)" in posts
     assert not journal(e, "credits.hold") and ledger(e)["accounts"]["B"] == 1000
     r = e.guarded(t, "credits.hold", dict(thread=t, member="B", amount=1), call_id="couch-hold", origin="program")
     assert r["state"] == "denied" and "No credits move" in r["reason"]
     assert denied(e, t, "runtime.web_fetch", dict(url=FLEET))  # the fleet is read before terms only
     send(e, "B", stay(t), thread=t)
     posts = json.dumps(e.read(t, "B"))
-    assert "Stay df01a744433022cc431fc2f8b8a547e7 on slot 3" in posts and "900000 nano-USD" in posts and "the amin moved no money" in posts
+    assert "Stay df01a744433022cc431fc2f8b8a547e7 on slot 3" in posts and "900000 nano-USD ($0.0009) charged" in posts and "the amin moved no money" in posts
     assert "settled" in e.rows("threads")[t]["flags"]
     send(e, "B", stay(t), thread=t)
     assert "already recorded" in json.dumps(e.read(t, "B"))
@@ -780,11 +866,22 @@ def test_couch_terms_need_a_ready_slot_of_an_online_mac(e):
 
 def test_couch_settlement_must_match_terms(e):
     t = couch(e)
-    for bad, why in ((dict(placement=dict(publisher=MAC, slot_id=0)), "not the agreed slot"), (dict(rateNanoUsdPerSecond="1"), "not the broker's 15000"),
+    for bad, why in ((dict(placement=dict(publisher=MAC, slot_id=0)), "not the agreed slot"), (dict(rateNanoUsdPerSecond="1"), "not the posted 15000"),
                      (dict(chargedNanoUsd="1"), "not the broker's charge"), (dict(sessionId="x"), "not a broker session id")):
         send(e, "B", stay(t, **bad), thread=t)
         assert why in json.dumps(e.read(t, "B"))
     assert "settled" not in e.rows("threads")[t]["flags"]
+
+
+# The broker adds the host's posted browse surcharge (operator.json browse.price) to the rate: named is per host, open only above a non-open default.
+@pytest.mark.parametrize("browse,rate,ok", [(dict(mode="named", hosts=["redfin.com"]), 15100, True), (dict(mode="named", hosts=["a.com", "b.com"]), 15200, True),
+                                            (dict(mode="open", hosts=[]), 20000, True), (dict(mode="named", hosts=["redfin.com"]), 15000, False), (None, 15100, False)])
+def test_couch_settles_at_the_posted_browse_rate(e, browse, rate, ok):
+    t = couch(e)
+    assert e.rows("threads")[t]["records"]["terms"]["browse"] == dict(default="named", open=5000, named=100)
+    send(e, "B", stay(t, rateNanoUsdPerSecond=str(rate), chargedNanoUsd=str(60 * rate), **({"browse": browse} if browse else {})), thread=t)
+    assert ("settled" in e.rows("threads")[t]["flags"]) == ok
+    assert ok or f"its rate is {rate}, not the posted" in json.dumps(e.read(t, "B"))
 
 
 def test_couch_declined(e):

@@ -132,6 +132,7 @@ def test_cycle_rows_blame_and_deadline(tmp_path, monkeypatch):
     monkeypatch.setattr(minion, "tool", lambda *a, **k: [])
     monkeypatch.setattr(minion, "get", lambda url: json.dumps(feeds[url.removeprefix(minion.SITE)]))
     monkeypatch.setattr(minion, "post_rows", lambda: None)
+    monkeypatch.setattr(minion, "relay", lambda: None)
 
     def no_card(row, agent, at):
         row.update(paid=False)

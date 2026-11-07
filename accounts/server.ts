@@ -6,6 +6,7 @@
 // Sign-in is the souk's mailed code, proxied: the service asks the souk to mail a code to the email and checks the code with
 // the souk, so a session proves the email the same way a souk sign-in does. See README.md.
 import { Wallet } from "npm:ethers@6.13.4/wallet";
+import { Transaction } from "npm:ethers@6.13.4/transaction";
 import { Interface } from "npm:ethers@6.13.4/abi";
 import { AdmissionError, authorizeLease, SITE } from "./lease_authorization.ts";
 import { registerArgs, RelayError } from "./guest_relay.ts";
@@ -65,11 +66,20 @@ function cfg(env: Ctx["env"]) {
     starter: BigInt(env.STARTER), startersPerDay: Number(env.STARTERS_PER_DAY), relaysPerDay: Number(env.RELAYS_PER_DAY) };
 }
 
+// sepolia.base.org sometimes answers a read with result null; one null is never taken as an answer. These methods always
+// have a value, so a null is retried a bounded number of times and then refused. A receipt is null until the tx is mined.
+const NEVER_NULL = new Set(["eth_call", "eth_getBlockByNumber", "eth_getTransactionCount", "eth_estimateGas", "eth_gasPrice",
+  "eth_maxPriorityFeePerGas", "eth_getBalance", "eth_sendRawTransaction"]);
+export const RPC_TRIES = 6;
 async function rpc(url: string, method: string, params: unknown[]) {
-  const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
-  const j = await r.json();
-  if (j.error) throw new Bad(`${method}: ${j.error.message}${j.error.data ? " " + JSON.stringify(j.error.data) : ""}`);
-  return j.result;
+  for (let i = 1; ; i++) {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    const j = await r.json();
+    if (j.error) throw new Bad(`${method}: ${j.error.message}${j.error.data ? " " + JSON.stringify(j.error.data) : ""}`);
+    if (j.result !== null && j.result !== undefined || !NEVER_NULL.has(method)) return j.result;
+    if (i === RPC_TRIES) throw new Bad(`${method}: the RPC answered null ${i} times`);
+    await new Promise((x) => setTimeout(x, 500 * i));
+  }
 }
 const call = async (c: Rec, to: string, fn: string, args: unknown[]) =>
   abi.decodeFunctionResult(fn, await rpc(c.rpc, "eth_call", [{ to, data: abi.encodeFunctionData(fn, args) }, "latest"]));
@@ -83,8 +93,11 @@ function send(c: Rec, from: Wallet, to: string, fn: string, args: unknown[]) {
       rpc(c.rpc, "eth_estimateGas", [{ from: from.address, to, data }]), rpc(c.rpc, "eth_gasPrice", []), rpc(c.rpc, "eth_maxPriorityFeePerGas", [])]);
     const raw = await from.signTransaction({ type: 2, chainId: c.chainId, nonce: Number(nonce), to, data, gasLimit: BigInt(gas) * 6n / 5n,
       maxFeePerGas: BigInt(fee) * 2n + BigInt(tip), maxPriorityFeePerGas: BigInt(tip) });
-    const hash = await rpc(c.rpc, "eth_sendRawTransaction", [raw]);
-    for (let i = 0; i < 120; i++) {
+    // The hash is the raw transaction's own. A broadcast whose reply is lost may still land, so the receipt decides; the
+    // broadcast's error is reported only if no receipt appears.
+    const hash = Transaction.from(raw).hash!;
+    const sent = await rpc(c.rpc, "eth_sendRawTransaction", [raw]).catch((e) => e);
+    for (let i = 0; i < (sent instanceof Error ? 20 : 120); i++) {
       const rc = await rpc(c.rpc, "eth_getTransactionReceipt", [hash]);
       if (rc) {
         if (rc.status !== "0x1") throw new Bad(`${fn} ${hash} reverted`);
@@ -92,7 +105,7 @@ function send(c: Rec, from: Wallet, to: string, fn: string, args: unknown[]) {
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
-    throw new Bad(`${fn} ${hash} not mined in 120 s`);
+    throw new Bad(`${fn} ${hash} not mined${sent instanceof Error ? ` in 20 s (broadcast: ${sent.message})` : " in 120 s"}`);
   });
   chain = task.catch(() => {});
   return task;
@@ -259,6 +272,7 @@ async function relaySweep(c: Rec, ctx: Ctx) {
 
 async function api(req: Request, path: string, ctx: Ctx) {
   const c = cfg(ctx.env), body = req.method === "POST" ? await req.json() : {};
+  must(typeof body === "object" && body !== null && !Array.isArray(body), "body: a JSON object");
   if (path === "/info") {
     const [r, pot] = [await relayer(ctx.env), new Wallet(ctx.env.POT_KEY).address];
     return { admission_signer: (await admissionSigner(ctx.env)).address, relayer: r.address, relayer_eth_wei: String(BigInt(await rpc(c.rpc, "eth_getBalance", [r.address, "latest"]))), pot,
