@@ -1,0 +1,19 @@
+{
+ "link": {
+  "kid": "0x13dc635643b52a9450735acb5fd55463e96e2a98051c18badc9c0295fce67de3",
+  "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
+  "operator": "0x1fbe7a7b3f7a37a967f3d927abd6f04db2766c5b",
+  "nonce": "1"
+ },
+ "publisherSignature": "0x10433378c02feaafdc4700d27a2173ef73b8f307e7fa6177eb38e0c3dd3da96030bbacb5bb4ccae673458f9fdfee7c15d60dd4fdbc54976a8a271e45a2d3c3021c",
+ "linkage_scope": "publisher_operator",
+ "authorization": {
+  "authorization": {
+   "operator": "0x1fbe7a7b3f7a37a967f3d927abd6f04db2766c5b",
+   "provisioner": "0x16c2b6de424e1d314877330a50984e9e3d4ddb8e",
+   "nonce": "0"
+  },
+  "signature": "0x529a44655fa9159e4852cf798763b824579b9646a6ea8f5e576e64a2fa75708c699452b873c985e40b02236687b82bc687af4a313e1b2c1be15aaa465aa697b71c"
+ },
+ "provisionerSignature": "0x79cab17861440a15b983502c32f1b46df26690d713610ac4db04ef453de79a2b72fda5172b31426a5d989ff2751f9c7afd066c3695abffcc805ddb9b93d6629d1b"
+}

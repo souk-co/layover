@@ -1,0 +1,7 @@
+## This run: a lease paid on GuestEscrow
+
+This thread's buyer agreed to lease terms paid on GuestEscrow (Base Sepolia, in LAYC), not held in souk credits. The terms record's `escrow` field has the termsHash, operator, cap and deposit, and the canonical terms JSON they hash.
+
+If the lease has not started, fetch exactly the three layover-chain URLs in the latest "Checking GuestEscrow, in this order:" record in this thread, in the order given, and stop. The program reads them (the terms, the buyer's balance and exposure) and either starts the lease or says what is missing and checks again by itself. Do not state chain facts yourself, and fetch nothing else.
+
+Once the lease is admitted (a "Lease lookup:" record in this thread names a leases URL, `/api/leases?agent_id=…&terms_hash=…`) and the lease has not started, fetch exactly that URL once and stop: the program finds the deal's lease there by its termsHash and ends the deal here the agreed minutes after the line starts it. Otherwise answer the buyer's question in one or two sentences from this thread and stop. You never move money or sign anything. GuestEscrow pays the host's claims from the buyer's escrow balance, never more than the cap; anything above the buyer's accepted caps not yet claimed is withdrawable at any time; closeTerms ends a deal's terms, and the host's guest then has one day to claim what was used. Never describe the escrow as locked.

@@ -1,0 +1,26 @@
+{
+  "none": {
+    "name": "none",
+    "policy": "No content classifier. The measured network allowlist remains enforced.",
+    "hooks": []
+  },
+  "baseline-pg2": {
+    "name": "baseline-pg2",
+    "policy": "Deny one tool call when PromptGuard 2 malicious probability is at least 0.5. Check the first user prompt before inference and each complete model response containing tool calls. Return PG2_PROMPT_ATTACK only to the encrypted user session. Continue the job.",
+    "hooks": ["first-user-prompt", "model-response-with-tool-calls"],
+    "model": "meta-llama/Llama-Prompt-Guard-2-86M",
+    "revision": "a8ded8e697ce7c355e395a0df51f94adb4a2fd27",
+    "files": {
+      "model.safetensors": "sha256:e72017dbbe89c1232dcbc4a74ce0c389db5b468c42afd05850347b2a8c5f6b09",
+      "tokenizer.json": "sha256:3e7e96867c2acdd575f0862c74822e05d1d15b93d9d9a4a2144b1ce83ae3339f",
+      "config.json": "git-sha1:523fd77f2094749c94c3cec5f1230508c54d71d5",
+      "special_tokens_map.json": "git-sha1:2c9cb07c8fdeeb5ac3ceafb170592e990b204dcd",
+      "tokenizer_config.json": "git-sha1:58c511edbc1ccdea19453c3a8ecd838fd42bc917"
+    },
+    "threshold": 0.5,
+    "window_tokens": 512,
+    "stride_tokens": 128,
+    "device": "cpu",
+    "threads": 1
+  }
+}

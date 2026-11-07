@@ -1,0 +1,2 @@
+#!/bin/bash
+case "$2" in batt) echo "Now drawing from 'AC Power'";; therm) printf "CPU_Scheduler_Limit \t= 100\nCPU_Available_CPUs \t= 8\nCPU_Speed_Limit \t= 100\n";; esac

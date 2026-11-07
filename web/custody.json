@@ -1,0 +1,15 @@
+{
+ "manifests": [
+  "d8e945b444e2b4f49f875b6355da157578fb13cd1865b9ffc3f76ec7f4706c72",
+  "2559a1a30e5273abbf72013a943d45223f2660da941edbd99ce1ce7e7c091e28",
+  "185592be0abccd71c5d0f557b8087a3670b82a9bffd36e5d9aa770e072bbf82e",
+  "adf0fcca4288f90c603892c8893a7e432865cc0bc416d2b541bbdb77e97fa24e"
+ ],
+ "os_image_hashes": [
+  "8783a3bea61a43f48b5b625667ca49784975b0e8d908d4d3b0890d0867bf6030"
+ ],
+ "operators": {
+  "layover-mini-home": "0x1fbe7a7b3f7a37a967f3d927abd6f04db2766c5b",
+  "resip-mini-1": "0x1fbe7a7b3f7a37a967f3d927abd6f04db2766c5b"
+ }
+}

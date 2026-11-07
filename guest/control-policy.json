@@ -1,0 +1,3 @@
+{"rules": [
+ {"name": "pod.dstack.soc1024.com", "port": 443, "methods": ["GET", "POST"], "paths": [], "path_prefixes": ["/resip-staging/api/", "/resip-custody-staging/api/custody/", "/relay-broker-staging/inference/"], "query": true, "drop_credentials": true, "max_request_bytes": 1048576, "max_response_bytes": 4194304, "upload_bytes": 100000000000, "download_bytes": 100000000000, "requests": 1000000, "requests_per_minute": 6000, "burst": 1000}
+]}

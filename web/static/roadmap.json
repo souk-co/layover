@@ -1,0 +1,352 @@
+{
+  "generated_at": "2026-11-05T23:43:10Z",
+  "repo": "souk-co/layover",
+  "issues": [
+    {
+      "number": 3,
+      "title": "Guest build hardcodes the exit and agent id; routing should be the host's",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/3",
+      "areas": [
+        "connection"
+      ],
+      "status": "blocked",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 4,
+      "title": "Host controls and visibility: editable host rules, private host log, local watcher",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/4",
+      "areas": [
+        "host"
+      ],
+      "status": "blocked",
+      "day": "sun",
+      "flags": [
+        "cut:stretch"
+      ]
+    },
+    {
+      "number": 5,
+      "title": "Front door: one-line guest skill install, email signup with starter credit",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/5",
+      "areas": [
+        "front-door"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 6,
+      "title": "Stays through the souk on the couch (compute-node)",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/6",
+      "areas": [
+        "couch",
+        "amin"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 7,
+      "title": "Spike: backpack, restoring a workspace on a different host",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/7",
+      "areas": [
+        "couch"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": [
+        "cut:stretch"
+      ]
+    },
+    {
+      "number": 8,
+      "title": "Just the tools: scriptable fetch tool and SOCKS5 proxy",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/8",
+      "areas": [
+        "connection"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 9,
+      "title": "Baseline-load minion: paid demand that produces every appraisal",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/9",
+      "areas": [
+        "minion"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": []
+    },
+    {
+      "number": 10,
+      "title": "AI subscription perk (plan-turn) with a host-set cap",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/10",
+      "areas": [
+        "host"
+      ],
+      "status": "blocked",
+      "day": "sun",
+      "flags": [
+        "cut:stretch"
+      ]
+    },
+    {
+      "number": 11,
+      "title": "Home connection: Xfinity route, Amazon measurement, broker-error fix",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/11",
+      "areas": [
+        "connection"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": [
+        "needs:andrew"
+      ]
+    },
+    {
+      "number": 12,
+      "title": "References both ways, and host profiles",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/12",
+      "areas": [
+        "amin"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": []
+    },
+    {
+      "number": 13,
+      "title": "Host skill: from repo to enrolled connections, no hand edits by us",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/13",
+      "areas": [
+        "host"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": []
+    },
+    {
+      "number": 14,
+      "title": "Spike: who signs payouts (broker as attested minion vs sandbox statement)",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/14",
+      "areas": [
+        "payments"
+      ],
+      "status": "ready",
+      "day": "thu",
+      "flags": []
+    },
+    {
+      "number": 15,
+      "title": "Spike: bind the amin's terms to escrow claims",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/15",
+      "areas": [
+        "payments"
+      ],
+      "status": "blocked",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 16,
+      "title": "Pricing units: per GB / per page, metered in the signed statement",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/16",
+      "areas": [
+        "connection",
+        "payments"
+      ],
+      "status": "blocked",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 17,
+      "title": "x402 top-up into escrow, and the mainnet deploy",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/17",
+      "areas": [
+        "payments"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": [
+        "needs:andrew"
+      ]
+    },
+    {
+      "number": 18,
+      "title": "Retire the amin's credit escrow (talk to nikete first)",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/18",
+      "areas": [
+        "amin",
+        "payments"
+      ],
+      "status": "blocked",
+      "day": null,
+      "flags": [
+        "needs:andrew"
+      ]
+    },
+    {
+      "number": 19,
+      "title": "Launch surface: landing page, repo, post",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/19",
+      "areas": [
+        "launch"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": [
+        "needs:andrew"
+      ]
+    },
+    {
+      "number": 20,
+      "title": "Governance contract / token drop: owner and relation to credit",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/20",
+      "areas": [
+        "launch"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": [
+        "needs:andrew"
+      ]
+    },
+    {
+      "number": 21,
+      "title": "VPN perk (ProtonVPN / Nym)",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/21",
+      "areas": [
+        "connection"
+      ],
+      "status": null,
+      "day": null,
+      "flags": []
+    },
+    {
+      "number": 22,
+      "title": "Browser in the couch",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/22",
+      "areas": [
+        "couch"
+      ],
+      "status": null,
+      "day": null,
+      "flags": []
+    },
+    {
+      "number": 23,
+      "title": "Committed stays: exclusive holds with a growing bonus",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/23",
+      "areas": [
+        "amin",
+        "payments"
+      ],
+      "status": null,
+      "day": null,
+      "flags": []
+    },
+    {
+      "number": 24,
+      "title": "Hosts outside the team: host front door",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/24",
+      "areas": [
+        "host"
+      ],
+      "status": null,
+      "day": null,
+      "flags": []
+    },
+    {
+      "number": 26,
+      "title": "Retire the name \"resip\" for Layover",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/26",
+      "areas": [
+        "launch"
+      ],
+      "status": "ready",
+      "day": "thu",
+      "flags": []
+    },
+    {
+      "number": 28,
+      "title": "Restore the live guest: finish the half-shipped 5507fd4 release",
+      "state": "closed",
+      "url": "https://github.com/souk-co/layover/issues/28",
+      "areas": [
+        "connection"
+      ],
+      "status": "verified",
+      "day": "thu",
+      "flags": []
+    },
+    {
+      "number": 29,
+      "title": "Several hosts on the Mini, and a first-time join for someone else's Mac",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/29",
+      "areas": [
+        "host"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": []
+    },
+    {
+      "number": 30,
+      "title": "Rehearsal: record the five Good-on-Sunday runs (launch gate)",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/30",
+      "areas": [
+        "launch",
+        "quality"
+      ],
+      "status": "blocked",
+      "day": "sat",
+      "flags": []
+    },
+    {
+      "number": 31,
+      "title": "Seller landing page: what on your Mac others could use",
+      "state": "open",
+      "url": "https://github.com/souk-co/layover/issues/31",
+      "areas": [
+        "host",
+        "launch"
+      ],
+      "status": "ready",
+      "day": "fri",
+      "flags": []
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "resip-guest",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@nearai/inference-sdk": "0.2.0",
+    "@peculiar/x509": "1.12.3",
+    "ethers": "6.17.0"
+  }
+}

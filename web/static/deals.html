@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>resip deals</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav></nav>
+<div>
+<div class="lbl">Buyer console</div>
+<h1>Your leases</h1>
+<div class="note">Leases are made with the buyer CLI (<span class="mono">deno run -A web/buyer/resip.ts</span>, see Leases). This page reads them with the same account secret, kept in this browser only. Amounts are the site's staging ledger, shown as credits at 100 credits = $1; souk escrow (credits held by the amin on souk-dev) is not readable here.</div>
+</div>
+<div id="err" class="err"></div>
+<section class="card">
+<div class="grid">
+<div class="field wide"><label for="secret">Account secret (the <span class="mono">secret</span> in your CLI <span class="mono">DIR/account.json</span>)</label><input id="secret" class="mono" autocomplete="off" spellcheck="false"></div>
+<div class="field wide"><label for="keys">Lease reply keys (optional): your CLI <span class="mono">DIR/lease-*.json</span> files. With them this page opens each ended lease's receipts.</label><input id="keys" type="file" accept=".json" multiple></div>
+</div>
+<button id="forget" type="button">Forget secret and keys</button>
+<div id="account" class="note"></div>
+</section>
+<div id="deals"></div>
+</main>
+<script type="module">
+import { api, esc, nav, fail, verdict, credits, hex, unhex } from "./common.js";
+nav("Deals");
+const S = crypto.subtle, te = new TextEncoder();
+const store = { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v), del: (k) => localStorage.removeItem(k) };
+const keys = () => JSON.parse(store.get("resip-lease-keys") ?? "{}");
+const sha = async (b) => hex(await S.digest("SHA-256", b));
+const canonical = (v) => Array.isArray(v) ? "[" + v.map(canonical).join(",") + "]" : v && typeof v === "object" ?
+  "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}" : JSON.stringify(v);
+document.querySelector("#secret").value = store.get("resip-account-secret") ?? "";
+let last = "";
+
+async function get(path, secret) {
+  const r = await fetch("api/" + path, secret ? { headers: { authorization: "Bearer " + secret } } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(`${r.status}: ${j.error}`);
+  return j;
+}
+
+// As resip.ts status: open receipts_enc with the lease's reply key and check the chain reaches the statement's end_head.
+async function receipts(l, jwk) {
+  const e = l.end.receipts_enc, st = l.end.statement;
+  const z = await S.deriveBits({ name: "X25519", public: await S.importKey("raw", unhex(e.epk), { name: "X25519" }, false, []) }, await S.importKey("jwk", jwk, { name: "X25519" }, false, ["deriveBits"]), 256);
+  const key = await S.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: te.encode("resip-receipts/1") }, await S.importKey("raw", z, "HKDF", false, ["deriveKey"]), { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const rc = JSON.parse(new TextDecoder().decode(await S.decrypt({ name: "AES-GCM", iv: unhex(e.nonce) }, key, unhex(e.ct))));
+  const problems = [];
+  let head = rc.start_prev_head;
+  if (head !== st.log.start_prev_head || rc.rows[0].seq !== st.log.start_seq || rc.rows.at(-1).seq !== st.log.end_seq) problems.push("receipts do not span the statement's window");
+  for (const [i, r] of rc.rows.entries()) {
+    if (r.seq !== st.log.start_seq + i) problems.push("rows not contiguous at " + r.seq);
+    if (r.entry && await sha(te.encode(canonical(r.entry))) !== r.digest) problems.push("entry digest mismatch at " + r.seq);
+    head = await sha(unhex(head + r.digest));
+  }
+  if (head !== st.log.end_head) problems.push("chain does not reach end_head");
+  const own = rc.rows.filter((r) => r.entry).map((r) => r.entry), reqs = own.filter((x) => x.kind === "request");
+  return { problems, rows: rc.rows.length, reqs: reqs.length, ok2xx: reqs.filter((x) => x.status >= 200 && x.status < 400).length, refused: own.filter((x) => x.kind === "refused").length };
+}
+
+function deal({ l, s, rc }) {
+  const st = l.end?.statement, d = l.decision, covered = s.periods.filter((p) => p.covered).length;
+  const spent = l.charged ?? 0, refunded = l.status === "declined" ? l.funds : l.end ? l.funds - spent : null;
+  return `<section class="card" style="margin-bottom:24px">
+  <div><strong class="${l.status === "active" ? "ok" : l.status === "declined" ? "bad" : ""}">${esc(l.status)}</strong> · lease <span class="mono">${esc(l.id)}</span> · line <span class="mono">${esc(l.agent_id)}</span> · ${l.exclusive === undefined ? "" : l.exclusive ? "exclusive" : "shared"}</div>
+  ${d ? `<div class="note">Decision: ${esc(d.decision)} · ${esc(d.reason)}</div>` : `<div class="note">Waiting for the line's decision.</div>`}
+  <div class="stats">
+    <div><strong>${s.window ? `${covered} / ${s.periods.length}` : "–"}</strong>periods covered${l.status === "active" ? " so far" : ""}</div>
+    <div><strong>${credits(l.funds)}</strong>held (deposit and top-ups)</div>
+    <div><strong>${credits(spent)}</strong>spent${l.status === "active" ? " so far" : ""}</div>
+    <div><strong>${refunded === null ? "at end" : credits(refunded)}</strong>refunded</div>
+  </div>
+  ${s.window ? `<div class="mono">${esc(s.window.start)} .. ${esc(s.window.end ?? s.window.term_end)}${d?.price_per_gb ? ` · ${credits(d.price_per_gb)} per GB · paid for ${esc(l.paid_bytes)} bytes` : ""}</div>` : ""}
+  ${st ? `<div>Requests to your domains (${st.domains.map(esc).join(", ")}): <strong>${st.requests_to_domains}</strong>, by this lease ${st.requests_by_lease}, refused to others ${st.refused_to_others}, shared with ${st.shared_with} other lease(s). Ended: ${esc(l.end.end_reason)}.</div>
+    ${st.bytes_by_period ? `<div>Traffic: <strong>${st.bytes_up + st.bytes_down}</strong> bytes (${st.bytes_up} up, ${st.bytes_down} down) in ${st.bytes_by_period.length} period(s) of 300 s.</div>` : ""}
+    <div>${esc(st.claim)}</div>
+    ${rc ? `<div>Receipts: ${rc.problems.length ? `<span class="bad">${rc.problems.map(esc).join("; ")}</span>` : `<span class="ok">chain of ${rc.rows} entries reaches the statement's end_head</span>`}.
+      Your requests: ${rc.reqs}, answered 2xx/3xx ${rc.ok2xx}${rc.reqs ? ` (${Math.round((100 * rc.ok2xx) / rc.reqs)}%)` : ""}; refused by the line ${rc.refused}.</div>`
+      : `<div class="note">Add this lease's <span class="mono">lease-${esc(l.id)}.json</span> above to open its receipts (per-request status).</div>`}
+    <div>Statement signature: ${verdict(l.end.verification)} <span class="note">checked by the site, not in this browser; build still allowed by custody: ${esc(s.measurement_current)}</span></div>
+    <details><summary>full statement</summary><pre>${esc(JSON.stringify(st, null, 1))}</pre></details>`
+    : l.status === "active" ? `<div class="note">Request counts and the signed statement arrive when the lease ends.</div>` : ""}
+  </section>`;
+}
+
+async function load() {
+  const secret = store.get("resip-account-secret");
+  if (!secret) { document.querySelector("#account").textContent = "Paste your account secret to see your leases."; document.querySelector("#deals").innerHTML = ""; last = ""; return; }
+  const id = await sha(unhex(secret)), acct = await get("accounts/" + id, secret), ks = keys();
+  const ids = [...new Set(acct.entries.map((e) => /^deposit, lease ([0-9a-f-]{36})$/.exec(e.what)?.[1]).filter(Boolean))].reverse();
+  const deals = await Promise.all(ids.map(async (lid) => {
+    const [l, s] = await Promise.all([get("leases/" + lid, secret), get(`leases/${lid}/statement`, secret)]);
+    return { l, s, rc: l.end?.receipts_enc && ks[lid] ? await receipts(l, ks[lid]) : null };
+  }));
+  const key = JSON.stringify([acct, deals]);
+  if (key === last) return;
+  last = key;
+  document.querySelector("#account").innerHTML = `Account <span class="mono">${esc(id)}</span> · staging balance ${credits(acct.balance)} · ${ids.length} lease(s) · ${Object.keys(ks).length} reply key(s) loaded`;
+  document.querySelector("#deals").innerHTML = ids.length ? deals.map(deal).join("") : `<section class="card note">No leases from this account yet.</section>`;
+}
+
+document.querySelector("#secret").addEventListener("change", (ev) => {
+  const v = ev.target.value.trim();
+  if (!/^[0-9a-f]{64}$/.test(v)) fail(new Error("The account secret is 64 lowercase hex characters."));
+  store.set("resip-account-secret", v);
+  load().catch(fail);
+});
+document.querySelector("#keys").addEventListener("change", async (ev) => {
+  const ks = keys();
+  for (const f of ev.target.files) {
+    const j = JSON.parse(await f.text());
+    if (!j.id || !j.reply_jwk) fail(new Error(`${f.name}: not a lease file (needs id and reply_jwk)`));
+    ks[j.id] = j.reply_jwk;
+  }
+  store.set("resip-lease-keys", JSON.stringify(ks));
+  load().catch(fail);
+});
+document.querySelector("#forget").addEventListener("click", () => {
+  store.del("resip-account-secret"); store.del("resip-lease-keys");
+  document.querySelector("#secret").value = "";
+  load().catch(fail);
+});
+await load().catch(fail);
+setInterval(() => load().catch(fail), 10000);
+</script>
+</body>
+</html>

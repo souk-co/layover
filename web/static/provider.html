@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>resip provider</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav></nav>
+<div>
+<div class="lbl">Provider console</div>
+<h1>Your lines</h1>
+<div class="note">One row per line (registered agent). The site has no owner login: this view is public per line, the same records the supplier view reads. Test agents (id prefix "test-") are left out.</div>
+</div>
+<div id="err" class="err"></div>
+<section class="card">
+<div class="scroll"><table><thead><tr><th>Line</th><th>Status</th><th>Region</th><th>ISP class</th><th>Exclusive tier</th><th>Guest version</th><th>Earned today</th></tr></thead><tbody id="lines"></tbody></table></div>
+<div class="note">Exclusive tier comes from the latest appraisal: exclusive leases need an attested <span class="mono">cgnat: false</span> (the souk's amin also accepts an owner-reported basis, which the site does not see). Guest version is the guest commit in the latest appraisal.</div>
+</section>
+<section class="card">
+<h2>Minion appraisals</h2>
+<div class="note">Built from the baseline-load minion's paid uses (#9): every hour it buys a fetch job on each line over a rotating slice of the 25-site target list, plus one page from netmeasure for CGNAT, and a short stay on each couch slot running a fixed task (uname, curl, df, workspace round trip). Rows are signed by the minion's key. Page classes: served (200, over 20 KB), thin (200, at most 20 KB), challenged (202, 403, 405, 429), blocked (anything else). A failed paid use is a use the minion paid for that did not deliver.</div>
+<div class="scroll"><table><thead><tr><th>Host / instance</th><th>Uses</th><th>Failed paid uses</th><th>Pages</th><th>Served</th><th>Thin</th><th>Challenged</th><th>Blocked</th><th>Latency</th><th>Address</th><th>CGNAT</th><th>Last use</th></tr></thead><tbody id="minion"></tbody></table></div>
+<details><summary>recent uses</summary><div class="scroll"><table><thead><tr><th>At</th><th>Host / instance</th><th>Kind</th><th>Result</th><th>Detail</th></tr></thead><tbody id="minion-rows"></tbody></table></div></details>
+</section>
+<div id="detail"></div>
+</main>
+<script type="module">
+import { api, esc, short, nav, fail, leaseCells, credits, probes } from "./common.js";
+nav("Provider");
+const DAY = 86400e3;
+let last = "";
+
+const when = (t) => `<span title="${esc(t)}">${esc(t.slice(5, 16).replace("T", " "))}</span>`;
+const ago = (t) => Math.round((Date.now() - Date.parse(t)) / 60e3);
+const tier = (p) => !p ? "no appraisal yet" : p.coarse.cgnat === false ? '<span class="ok">exclusive (attested no CGNAT)</span>' : `shared only (CGNAT ${esc(p.coarse.cgnat)})`;
+const summary = (x) => typeof x === "string" ? esc(x) : esc(JSON.stringify(x));
+
+function chart(days) {
+  const by = Object.fromEntries(days.map((d) => [d.day, d.cents]));
+  const week = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - (6 - i) * DAY).toISOString().slice(0, 10)).map((d) => [d, by[d] ?? 0]);
+  const max = Math.max(...week.map(([, c]) => c), 1);
+  return `<div>7-day total: <strong>${credits(week.reduce((n, [, c]) => n + c, 0))}</strong></div><div class="bars" role="img" aria-label="credits earned per day, last 7 UTC days">${week.map(([d, c]) => `<div style="height:${(100 * c) / max}%" title="${d}: ${Math.round(c)} credits ($${(c / 100).toFixed(2)})"></div>`).join("")}</div>
+  <div class="days">${week.map(([d]) => `<span>${d.slice(5)}</span>`).join("")}</div>
+  <details><summary>table</summary><table><tbody>${week.map(([d, c]) => `<tr><td class="mono">${d}</td><td>${credits(c)}</td></tr>`).join("")}</tbody></table></details>`;
+}
+
+function qa(ps) {
+  if (ps === null) return `<div class="note">No probes yet: the site does not serve <span class="mono">/api/agents/{id}/probes</span> on this deploy.</div>`;
+  if (!ps.length) return `<div class="note">No probes yet.</div>`;
+  const done = ps.filter((p) => p.done_at), passed = done.filter((p) => p.pass);
+  return `<div>${passed.length} of ${done.length} completed probes passed${ps.length > done.length ? `, ${ps.length - done.length} pending` : ""}. Newest first.</div>
+  <div class="strip">${ps.map((p) => `<span class="${!p.done_at ? "" : p.pass ? "p" : "f"}" title="${esc(p.scheduled_at)} · drand ${esc(p.drand_round)} · ${!p.done_at ? "pending" : p.pass ? "pass" : "fail"} · same IP as last: ${esc(p.same_ip_as_last)} · ${esc(p.bytes)} bytes · ${summary(p.sites)}"></span>`).join("")}</div>
+  <details><summary>table</summary><div class="scroll"><table><thead><tr><th>Scheduled</th><th>drand round</th><th>Filed</th><th>Done</th><th>Result</th><th>Same IP as last</th><th>Sites</th><th>Bytes</th></tr></thead><tbody>${ps.map((p) =>
+    `<tr><td class="mono">${esc(p.scheduled_at)}</td><td class="mono">${esc(p.drand_round)}</td><td class="mono">${esc(p.filed_at)}</td><td class="mono">${esc(p.done_at)}</td>
+    <td class="${p.pass ? "ok" : "bad"}">${!p.done_at ? "pending" : p.pass ? "pass" : "fail"}</td><td>${esc(p.same_ip_as_last)}</td><td>${summary(p.sites)}</td><td>${esc(p.bytes)}</td></tr>`).join("")}</tbody></table></div></details>`;
+}
+
+function references(rs) {
+  if (!rs.length) return `<div class="note">No references yet.</div>`;
+  const n = (v) => rs.filter((r) => r.up === v).length;
+  return `<div>${rs.length} from buyers after settled deals: ${n(true)} up, ${n(false)} down. Newest first.</div>
+  <div class="scroll"><table><thead><tr><th>Deal</th><th>Kind</th><th></th><th>Reference</th></tr></thead><tbody>${rs.map((r) =>
+    `<tr><td class="mono">${esc(r.deal)}</td><td>${esc(r.kind)}</td><td class="${r.up === true ? "ok" : r.up === false ? "bad" : ""}">${r.up === true ? "up" : r.up === false ? "down" : ""}</td><td>${esc(r.text)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function appraisals(rqs, aps) {
+  if (!rqs.length) return `<div class="note">No appraisal requests yet.</div>`;
+  const byId = Object.fromEntries(aps.map((p) => [p.id, p]));
+  return `<div class="scroll"><table><thead><tr><th>Requested</th><th>Status</th><th>Verdict</th><th>Region</th><th>ASN</th><th>CGNAT</th><th>Bandwidth</th><th>Challenges</th><th>Guest</th></tr></thead><tbody>${rqs.map((r) => {
+    const p = byId[r.appraisal_id];
+    if (!p) return `<tr><td class="mono">${when(r.at)}</td><td>${esc(r.status)}</td><td colspan="7" class="${r.status === "failed" ? "bad" : "note"}">${esc(r.error ?? "")}</td></tr>`;
+    const ch = p.challenges ?? [];
+    return `<tr><td class="mono">${when(r.at)}</td><td>done</td><td><span class="${p.pass ? "ok" : "bad"}">${p.pass ? "pass" : "fail"}</span>${p.pass ? "" : `<div class="note">${p.checks.filter((c) => !c.pass).map((c) => esc(c.name)).join("; ")}</div>`}</td>
+      <td>${esc(p.coarse.region)}</td><td>${esc(p.asn)}</td><td>${esc(p.coarse.cgnat)}</td><td>${esc(p.bandwidth_mbps)} Mbps</td>
+      <td>${ch.filter((c) => c.challenge).length} of ${ch.length} sites challenged</td><td class="mono"><a href="api/appraisals/${esc(p.id)}/verified">${esc(p.guest_version)}</a></td></tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+
+const pct = (n, d) => d ? `${Math.round((100 * n) / d)}%` : "";
+const median = (xs) => xs.length ? xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)] : null;
+function minion(rows) {
+  const by = {};
+  for (const r of rows) (by[r.agent_id] ??= []).push(r);
+  document.querySelector("#minion").innerHTML = Object.entries(by).map(([id, rs]) => {
+    const pages = rs.flatMap((r) => r.pages ?? []), n = (c) => pages.filter((p) => p.class === c).length;
+    const ms = median(rs.flatMap((r) => r.kind === "couch" ? (r.open_ms ? [r.open_ms] : []) : (r.pages ?? []).map((p) => p.ms)));
+    const commits = rs.filter((r) => r.ip_commit), distinct = new Set(commits.map((r) => r.ip_commit)).size;
+    const cg = rs.filter((r) => "cgnat" in r).at(-1), failed = rs.filter((r) => r.failed_paid_use).length;
+    const couch = rs[0].kind === "couch", na = `<span class="note">couch</span>`;
+    return `<tr><td class="mono" style="word-break:break-all">${esc(id)}</td><td>${rs.length}</td><td class="${failed ? "bad" : "ok"}">${failed}</td><td>${pages.length}</td>
+      <td>${pct(n("served"), pages.length)}</td><td>${pct(n("thin"), pages.length)}</td><td>${pct(n("challenged"), pages.length)}</td><td>${pct(n("blocked"), pages.length)}</td>
+      <td>${ms === null ? "" : `${(ms / 1000).toFixed(1)} s <span class="note">median ${couch ? "stay open" : "per page"}</span>`}</td>
+      <td>${couch ? na : commits.length ? `${distinct} address${distinct > 1 ? "es" : ""} over ${commits.length} measurement${commits.length > 1 ? "s" : ""}` : `<span class="note">not measured</span>`}</td>
+      <td>${couch ? na : cg ? `${esc(cg.cgnat ?? "unknown")}<div class="note">${esc(cg.cgnat_method)}</div>` : `<span class="note">not measured</span>`}</td><td class="mono">${esc(rs.at(-1).at)}</td></tr>`;
+  }).join("") || `<tr><td colspan="12" class="note">No minion rows yet.</td></tr>`;
+  document.querySelector("#minion-rows").innerHTML = rows.slice(-40).reverse().map((r) => `<tr><td class="mono">${esc(r.at)}</td><td class="mono" style="word-break:break-all">${esc(r.agent_id)}</td><td>${esc(r.kind)}</td>
+    <td class="${r.ok ? "ok" : "bad"}">${r.ok ? "ok" : r.failed_paid_use ? "failed paid use" : "failed (unpaid)"}</td>
+    <td>${r.error ? esc(r.error) : r.kind === "couch" ? esc(Object.entries(r.steps).map(([k, v]) => `${k} ${v.ok ? "ok" : "FAIL"}`).join(", ")) + ` · ${esc(r.charged_nano_usd)} nano-USD`
+      : esc(`${(r.pages ?? []).map((p) => `${p.site} ${p.status}`).join(", ")} · ${r.settled ?? ""}`)}</td></tr>`).join("");
+}
+
+async function load() {
+  const [all, refs] = await Promise.all([api("agents"), api("references")]);
+  const agents = all.filter((a) => !a.agent_id.startsWith("test-"));
+  const lines = await Promise.all(agents.map(async (a) => {
+    const q = encodeURIComponent(a.agent_id);
+    const [aps, rqs, earn, ls, ps] = await Promise.all([api(`agents/${q}/appraisals`), api("appraisal-requests?agent_id=" + q), api(`agents/${q}/earnings`), api("leases?agent_id=" + q), probes(a.agent_id)]);
+    return { a, aps: aps.sort((x, y) => y.at.localeCompare(x.at)), rqs: rqs.reverse(), earn, ls: ls.reverse(), ps, rs: refs.filter((r) => r.subject === a.agent_id) };
+  }));
+  const key = JSON.stringify(lines);
+  if (key === last) return;
+  last = key;
+  const today = new Date().toISOString().slice(0, 10);
+  document.querySelector("#lines").innerHTML = lines.length ? lines.map(({ a, aps, earn }) => `<tr><td class="mono" style="word-break:normal;white-space:nowrap"><a href="#${esc(a.agent_id)}">${esc(a.agent_id)}</a></td>
+    <td><span class="${a.verification.ok ? "ok" : "bad"}">${a.verification.ok ? "attested" : "not verified"}</span><div class="note">registered ${ago(a.at)} min ago</div></td>
+    <td>${esc(a.coarse.region)}</td><td>${esc(a.coarse.isp_class)}</td><td>${tier(aps[0])}</td><td class="mono">${esc(aps[0]?.guest_version ?? "")}</td>
+    <td>${credits(earn.days.find((d) => d.day === today)?.cents ?? 0)}</td></tr>`).join("") : `<tr><td colspan="7" class="note">No lines registered yet.</td></tr>`;
+  document.querySelector("#detail").innerHTML = lines.map(({ a, aps, rqs, earn, ls, ps, rs }) => `<section class="card" id="${esc(a.agent_id)}" style="margin-bottom:24px">
+    <h2>${esc(a.agent_id)}</h2>
+    <div><div class="lbl">Earnings, last 7 UTC days</div><div class="note">From the site's lease ledger: what holders were charged on this line's accepted leases, accruing at the agreed price per hour (staging credit, not money). Souk settlement (credits held and released by the amin on souk-dev) is not readable here: souk-dev answers 401 without a member login.</div></div>
+    ${chart(earn.days)}
+    <div><div class="lbl">Data used today</div><div class="note">Not shown: the guest's daily cap (<span class="mono">DAILY_BYTES</span>, set in the measured manifest) and its use today (kept in the guest's sealed state) are not reported to the site.</div></div>
+    <div><div class="lbl">References</div><div class="note">One line each buyer left about this line after a settled deal, recorded by the IP souk's program (only the deal's two sides, once each). Hosts' references about buyers stay in the souk.</div></div>${references(rs)}
+    <div><div class="lbl">QA probes</div></div>${qa(ps)}
+    <div><div class="lbl">Appraisals</div></div>${appraisals(rqs, aps)}
+    <div><div class="lbl">Deals</div><div class="note">Coverage: each 300 s of the window with a vantage check that saw the same IP and ASN. The amin pays the line for covered periods only. Per-deal prices and amounts paid stay between the holder and the guest.</div></div>
+    <div class="scroll"><table><thead><tr><th>Requested</th><th>Lease</th><th>Status</th><th>Window</th><th>Coverage</th><th>Vantage</th><th>Mode and statement</th></tr></thead><tbody>${ls.length ? ls.map((l) =>
+      `<tr><td class="mono">${esc(l.at)}</td><td class="mono">${short(l.id)}</td><td class="${l.status === "active" ? "ok" : l.status === "declined" ? "bad" : ""}">${esc(l.status)}</td>${leaseCells(l)}</tr>`).join("")
+      : `<tr><td colspan="7" class="note">No deals yet.</td></tr>`}</tbody></table></div></section>`).join("");
+}
+// Each section loads on its own, so a failing minion feed does not blank the lines (and the other way round).
+const minionFail = (e) => { document.querySelector("#minion").innerHTML = `<tr><td colspan="12" class="bad">minion rows: ${esc(e.message)}</td></tr>`; };
+const both = () => Promise.all([load().catch(fail), api("minion/rows").then(minion).catch(minionFail)]);
+await both();
+setInterval(both, 10000);
+</script>
+</body>
+</html>

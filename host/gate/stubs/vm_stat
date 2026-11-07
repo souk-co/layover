@@ -1,0 +1,2 @@
+#!/bin/bash
+printf "Pages free: 100.\nPages inactive: 100.\nPages speculative: 1.\n"

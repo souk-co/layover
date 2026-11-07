@@ -1,0 +1,4 @@
+{"rules": [
+ {"name": "ipinfo.io", "port": 443, "methods": ["GET"], "paths": ["/json"], "drop_credentials": true, "max_request_bytes": 4096, "max_response_bytes": 65536, "upload_bytes": 409600, "download_bytes": 6553600, "requests": 100, "requests_per_minute": 10},
+ {"name": "dns.google", "port": 443, "methods": ["GET"], "paths": ["/resolve"], "query": true, "headers": {"Accept": "application/dns-json"}, "drop_credentials": true, "max_request_bytes": 4096, "max_response_bytes": 65536, "upload_bytes": 409600000, "download_bytes": 6553600000, "requests": 100000, "requests_per_minute": 600, "burst": 20}
+]}

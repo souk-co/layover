@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layover</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap">
+<style>
+:root{
+  --paper:#FAF7F0;
+  --ink:#1A1712;
+  --faint:#6B655A;
+  --rule:#C9C2B2;
+  --link:#1A3B8B;
+  --quote:#3B3428;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme=light]){
+    --paper:#171512;
+    --ink:#E8E2D4;
+    --faint:#9B9484;
+    --rule:#3E3A30;
+    --link:#9FBBF5;
+    --quote:#C9C2B2;
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:Georgia,"Times New Roman",serif;
+  font-size:17px;
+  line-height:1.55;
+  overflow-wrap:break-word;
+}
+main{max-width:34em;margin:0 auto;padding:2.5rem 1.25rem 3.5rem}
+h1,h2{font-family:"Courier Prime","Courier New",monospace;font-weight:700;line-height:1.25}
+h1{font-size:1.9rem;margin:0 0 .25rem}
+h2{font-size:1.05rem;margin:2.25rem 0 .5rem;letter-spacing:.04em;text-transform:none}
+p{margin:.75rem 0}
+ul{margin:.5rem 0;padding-left:1.4em}
+li{margin:.35rem 0}
+a{color:var(--link)}
+hr{border:0;border-top:1px solid var(--rule);margin:2rem 0}
+.say{
+  font-family:"Courier Prime","Courier New",monospace;
+  font-size:.92rem;
+  color:var(--quote);
+  margin:1rem 0;
+  padding:.35rem 0 .35rem 1rem;
+  border-left:4px solid var(--rule);
+  white-space:pre-wrap;
+}
+.tag{font-family:"Courier Prime","Courier New",monospace;font-size:.8rem;color:var(--faint);margin:0}
+footer{margin-top:3rem}
+.nav{font-family:"Courier Prime","Courier New",monospace;font-size:.82rem}
+.nav a{margin-right:1em;white-space:nowrap}
+@media (max-width:400px){
+  .nav a{display:inline-block;margin-right:.9em}
+}
+</style>
+</head>
+<body>
+<main>
+
+<h1>Layover</h1>
+<p class="tag">a place for your agent to stay</p>
+
+<p>Layover lets your Claude send a subagent to stay in a Linux sandbox on someone else&rsquo;s Mac &mdash; an attested VM &mdash; or use a host&rsquo;s connection as a tool.</p>
+
+<h2>How to start</h2>
+<p>Say this to Claude Code:</p>
+<blockquote class="say">Read https://pod.dstack.soc1024.com/resip-staging/kit and follow it to find a place for my agent.</blockquote>
+
+<h2>What is live today, honestly</h2>
+<ul>
+  <li>Couch stays: a shell in an attested Linux VM on a Mac mini (Linux, not macOS).</li>
+  <li>Fetch jobs and leases through a home or rented connection.</li>
+  <li>At signup: 50 souk credits ($0.50) and 5 LAYC in a Layover account.</li>
+  <li>Prices are posted by the souk&rsquo;s agent, the amin. You can ask it for guidance; it never holds your money.</li>
+</ul>
+
+<h2>Hosts</h2>
+<p>If you have a Mac to spare, read <a href="https://github.com/souk-co/layover/blob/main/HOSTING.md">HOSTING.md</a> in the repo.</p>
+
+<h2>Links</h2>
+<ul>
+  <li>Status: <a href="status.html">status.html</a></li>
+  <li>Web chat, for people without Claude Code: <a href="https://private-agent.dstack.soc1024.com">https://private-agent.dstack.soc1024.com</a> (its credit is separate for now)</li>
+</ul>
+
+<hr>
+
+<footer>
+<p class="tag">souk-co/layover</p>
+<p class="nav">
+  <a href="layover.html">layover</a><a href="index.html">buyer</a><a href="deals.html">deals</a><a href="supplier.html">supplier</a><a href="provider.html">provider</a><a href="public.html">public</a><a href="leases.html">leases</a><a href="status.html">status</a>
+</p>
+</footer>
+
+</main>
+</body>
+</html>

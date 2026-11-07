@@ -1,0 +1,642 @@
+{
+ "/api/appraisals/a0000000-0000-4000-8000-000000000001/verified": {
+  "id": "a0000000-0000-4000-8000-000000000001",
+  "agent_id": "resip-mini-1",
+  "verified_by": "resip-staging site",
+  "pass": true,
+  "mode": "apple-root",
+  "checks": [
+   {
+    "name": "report_data binds",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "same run as registration",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "App Attest assertion, mode apple-root",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "measurement allowed",
+    "pass": true,
+    "detail": "stub"
+   }
+  ],
+  "checked_at": "2026-11-04T18:00:00.000Z",
+  "coarse": {
+   "region": "[region]",
+   "isp_class": "US cable",
+   "residential": true,
+   "cgnat": "not_checked"
+  },
+  "asn": 7922,
+  "beacon": {
+   "chain_index": 2,
+   "pulse_index": 2013280,
+   "output_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "cert_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "ms": 412
+  },
+  "challenges": [
+   {
+    "site": "www.google.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.amazon.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.reddit.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.linkedin.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.nytimes.com",
+    "status": 200,
+    "challenge": false
+   }
+  ],
+  "bandwidth_mbps": 85,
+  "at": "2026-11-04T17:10:00.000Z",
+  "guest_version": "a7641458",
+  "attestation": "abababababababababababababababababababababababababababababababab",
+  "request_id": "c0000000-0000-4000-8000-000000000001"
+ },
+ "/api/appraisals/a0000000-0000-4000-8000-000000000002/verified": {
+  "id": "a0000000-0000-4000-8000-000000000002",
+  "agent_id": "resip-mini-1",
+  "verified_by": "resip-staging site",
+  "pass": false,
+  "mode": "apple-root",
+  "checks": [
+   {
+    "name": "report_data binds",
+    "pass": false,
+    "detail": "stub: document hash differs from attested report_data"
+   },
+   {
+    "name": "same run as registration",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "App Attest assertion, mode apple-root",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "measurement allowed",
+    "pass": true,
+    "detail": "stub"
+   }
+  ],
+  "checked_at": "2026-11-04T18:00:00.000Z",
+  "coarse": {
+   "region": "[region]",
+   "isp_class": "US cable",
+   "residential": true,
+   "cgnat": "not_checked"
+  },
+  "asn": 7922,
+  "beacon": {
+   "chain_index": 2,
+   "pulse_index": 2013280,
+   "output_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "cert_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "ms": 412
+  },
+  "challenges": [
+   {
+    "site": "www.google.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.amazon.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.reddit.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.linkedin.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.nytimes.com",
+    "status": 200,
+    "challenge": false
+   }
+  ],
+  "bandwidth_mbps": 85,
+  "at": "2026-11-04T17:10:00.000Z",
+  "guest_version": "a7641458",
+  "attestation": "abababababababababababababababababababababababababababababababab",
+  "request_id": "c0000000-0000-4000-8000-000000000002"
+ },
+ "/api/leases/b0000000-0000-4000-8000-000000000001/statement": {
+  "lease_id": "b0000000-0000-4000-8000-000000000001",
+  "agent_id": "resip-mini-1",
+  "status": "ended",
+  "end_reason": "lapsed: term ended",
+  "window": {
+   "start": "2026-11-04T18:00:00.000Z",
+   "term_end": "2026-11-04T18:30:00.000Z",
+   "end": "2026-11-04T18:30:00.000Z"
+  },
+  "exclusive": true,
+  "statement_exclusive": true,
+  "shared_with": 0,
+  "periods": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:10:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:15:00.000Z",
+    "covered": false
+   },
+   {
+    "start": "2026-11-04T18:20:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:25:00.000Z",
+    "covered": true
+   }
+  ],
+  "ip_commitments": {
+   "count": 1,
+   "checks": 6,
+   "stable": true
+  },
+  "attestation_pass": true,
+  "attestation_checks": null,
+  "measurement_current": true,
+  "verified_by": "resip-staging site",
+  "bytes_up": 1000000,
+  "bytes_down": 39000000,
+  "bytes_by_period": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "bytes_up": 400000,
+    "bytes_down": 20000000
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "bytes_up": 600000,
+    "bytes_down": 19000000
+   }
+  ]
+ },
+ "/api/leases/b0000000-0000-4000-8000-000000000002/statement": {
+  "lease_id": "b0000000-0000-4000-8000-000000000002",
+  "agent_id": "resip-mini-1",
+  "status": "declined",
+  "end_reason": null,
+  "window": null,
+  "exclusive": false,
+  "statement_exclusive": null,
+  "shared_with": null,
+  "periods": [],
+  "ip_commitments": {
+   "count": 0,
+   "checks": 0,
+   "stable": false
+  },
+  "attestation_pass": null,
+  "attestation_checks": null,
+  "measurement_current": null,
+  "verified_by": "resip-staging site",
+  "bytes_up": null,
+  "bytes_down": null,
+  "bytes_by_period": null
+ },
+ "/api/leases/b0000000-0000-4000-8000-000000000003/statement": {
+  "lease_id": "b0000000-0000-4000-8000-000000000003",
+  "agent_id": "resip-mini-1",
+  "status": "active",
+  "end_reason": null,
+  "window": {
+   "start": "2026-11-04T18:00:00.000Z",
+   "term_end": "2026-11-04T18:30:00.000Z",
+   "end": null
+  },
+  "exclusive": true,
+  "statement_exclusive": null,
+  "shared_with": null,
+  "periods": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "covered": true
+   }
+  ],
+  "ip_commitments": {
+   "count": 1,
+   "checks": 1,
+   "stable": true
+  },
+  "attestation_pass": null,
+  "attestation_checks": null,
+  "measurement_current": null,
+  "verified_by": "resip-staging site",
+  "bytes_up": null,
+  "bytes_down": null,
+  "bytes_by_period": null
+ },
+ "/api/appraisal-requests/c0000000-0000-4000-8000-000000000001": {
+  "id": "c0000000-0000-4000-8000-000000000001",
+  "agent_id": "resip-mini-1",
+  "requested_by": "H",
+  "status": "done",
+  "appraisal_id": "a0000000-0000-4000-8000-000000000001",
+  "error": null
+ },
+ "/api/appraisal-requests/c0000000-0000-4000-8000-000000000002": {
+  "id": "c0000000-0000-4000-8000-000000000002",
+  "agent_id": "resip-mini-1",
+  "requested_by": "H",
+  "status": "done",
+  "appraisal_id": "a0000000-0000-4000-8000-000000000002",
+  "error": null
+ },
+ "/api/leases/b0000000-0000-4000-8000-000000000004/statement": {
+  "lease_id": "b0000000-0000-4000-8000-000000000004",
+  "agent_id": "resip-mini-1",
+  "status": "ended",
+  "end_reason": "lapsed: term ended",
+  "window": {
+   "start": "2026-11-04T18:00:00.000Z",
+   "term_end": "2026-11-04T18:30:00.000Z",
+   "end": "2026-11-04T18:30:00.000Z"
+  },
+  "exclusive": false,
+  "statement_exclusive": false,
+  "shared_with": 1,
+  "periods": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:10:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:15:00.000Z",
+    "covered": false
+   },
+   {
+    "start": "2026-11-04T18:20:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:25:00.000Z",
+    "covered": true
+   }
+  ],
+  "ip_commitments": {
+   "count": 1,
+   "checks": 6,
+   "stable": true
+  },
+  "attestation_pass": true,
+  "attestation_checks": null,
+  "measurement_current": true,
+  "verified_by": "resip-staging site",
+  "bytes_up": 1000000,
+  "bytes_down": 39000000,
+  "bytes_by_period": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "bytes_up": 400000,
+    "bytes_down": 20000000
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "bytes_up": 600000,
+    "bytes_down": 19000000
+   }
+  ]
+ },
+ "/api/leases/b0000000-0000-4000-8000-000000000005/statement": {
+  "lease_id": "b0000000-0000-4000-8000-000000000005",
+  "agent_id": "resip-mini-1",
+  "status": "ended",
+  "end_reason": "lapsed: term ended",
+  "window": {
+   "start": "2026-11-04T18:00:00.000Z",
+   "term_end": "2026-11-04T18:30:00.000Z",
+   "end": "2026-11-04T18:30:00.000Z"
+  },
+  "exclusive": false,
+  "statement_exclusive": true,
+  "shared_with": 0,
+  "periods": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:10:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:15:00.000Z",
+    "covered": false
+   },
+   {
+    "start": "2026-11-04T18:20:00.000Z",
+    "covered": true
+   },
+   {
+    "start": "2026-11-04T18:25:00.000Z",
+    "covered": true
+   }
+  ],
+  "ip_commitments": {
+   "count": 1,
+   "checks": 6,
+   "stable": true
+  },
+  "attestation_pass": true,
+  "attestation_checks": null,
+  "measurement_current": true,
+  "verified_by": "resip-staging site",
+  "bytes_up": 1000000,
+  "bytes_down": 39000000,
+  "bytes_by_period": [
+   {
+    "start": "2026-11-04T18:00:00.000Z",
+    "bytes_up": 400000,
+    "bytes_down": 20000000
+   },
+   {
+    "start": "2026-11-04T18:05:00.000Z",
+    "bytes_up": 600000,
+    "bytes_down": 19000000
+   }
+  ]
+ },
+ "/api/appraisals/a0000000-0000-4000-8000-000000000003/verified": {
+  "id": "a0000000-0000-4000-8000-000000000003",
+  "agent_id": "resip-mini-1",
+  "verified_by": "resip-staging site",
+  "pass": true,
+  "mode": "apple-root",
+  "checks": [
+   {
+    "name": "report_data binds",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "same run as registration",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "App Attest assertion, mode apple-root",
+    "pass": true,
+    "detail": "stub"
+   },
+   {
+    "name": "measurement allowed",
+    "pass": true,
+    "detail": "stub"
+   }
+  ],
+  "checked_at": "2026-11-04T18:00:00.000Z",
+  "coarse": {
+   "region": "[region]",
+   "isp_class": "US cable",
+   "residential": true,
+   "cgnat": "not_checked"
+  },
+  "asn": 7922,
+  "beacon": {
+   "chain_index": 2,
+   "pulse_index": 2013280,
+   "output_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "cert_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "ms": 412
+  },
+  "challenges": [
+   {
+    "site": "www.google.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.amazon.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.reddit.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.linkedin.com",
+    "status": 200,
+    "challenge": false
+   },
+   {
+    "site": "www.nytimes.com",
+    "status": 200,
+    "challenge": false
+   }
+  ],
+  "bandwidth_mbps": 85,
+  "at": "2026-11-04T17:10:00.000Z",
+  "guest_version": "a7641458",
+  "attestation": "abababababababababababababababababababababababababababababababab",
+  "request_id": "c0000000-0000-4000-8000-000000000003"
+ },
+ "/api/appraisal-requests/c0000000-0000-4000-8000-000000000003": {
+  "id": "c0000000-0000-4000-8000-000000000003",
+  "agent_id": "resip-mini-1",
+  "requested_by": "H2",
+  "status": "done",
+  "appraisal_id": "a0000000-0000-4000-8000-000000000003",
+  "error": null
+ },
+ "/api/couch-slots": [
+  {
+   "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
+   "mac": "Andrews-Mac-mini.local",
+   "chip": "Apple M4 Pro",
+   "online": true,
+   "updated_at": 1793911441,
+   "vcpus": 1,
+   "mem_mib": 4096,
+   "slot_id": 0,
+   "state": "ready",
+   "last_error_code": "node_gateway_error",
+   "run_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+   "verified": true,
+   "handoverAt": 1793913379
+  },
+  {
+   "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
+   "mac": "Andrews-Mac-mini.local",
+   "chip": "Apple M4 Pro",
+   "online": true,
+   "updated_at": 1793911441,
+   "vcpus": 1,
+   "mem_mib": 4096,
+   "slot_id": 1,
+   "state": "ready",
+   "last_error_code": null,
+   "run_id": "0x0000000000000000000000000000000000000000000000000000000000000009",
+   "verified": false,
+   "handoverAt": 1793913379
+  },
+  {
+   "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
+   "mac": "Andrews-Mac-mini.local",
+   "chip": "Apple M4 Pro",
+   "online": true,
+   "updated_at": 1793911441,
+   "vcpus": 1,
+   "mem_mib": 4096,
+   "slot_id": 2,
+   "state": "attesting",
+   "last_error_code": null,
+   "run_id": "0x0000000000000000000000000000000000000000000000000000000000000002",
+   "verified": false,
+   "handoverAt": 1793915030
+  },
+  {
+   "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
+   "mac": "Andrews-Mac-mini.local",
+   "chip": "Apple M4 Pro",
+   "online": true,
+   "updated_at": 1793911441,
+   "vcpus": 1,
+   "mem_mib": 4096,
+   "slot_id": 3,
+   "state": "ready",
+   "last_error_code": null,
+   "run_id": "0x0000000000000000000000000000000000000000000000000000000000000003",
+   "verified": true,
+   "handoverAt": 1793913253
+  },
+  {
+   "publisher": "0x00000000000000000000000000000000000000aa",
+   "mac": "mac-aa",
+   "chip": "Apple M4",
+   "online": false,
+   "updated_at": 1793900000,
+   "vcpus": 1,
+   "mem_mib": 4096,
+   "slot_id": 0,
+   "state": "ready",
+   "last_error_code": null,
+   "run_id": "0x0000000000000000000000000000000000000000000000000000000000000004",
+   "verified": true,
+   "handoverAt": 1793902600
+  }
+ ],
+ "/api/market": {
+  "at": "2026-11-05T18:00:00.000Z",
+  "lines": [
+   {
+    "agent_id": "resip-mini-1",
+    "region": "us-ny",
+    "isp_class": "cable",
+    "residential": true,
+    "verified": true,
+    "appraisal": {
+     "at": "2026-11-05T10:00:00.000Z",
+     "pass": true,
+     "guest_version": "a7641458",
+     "cgnat": false,
+     "bandwidth_mbps": 80
+    },
+    "leases": {
+     "accepted": 3,
+     "ended": 2,
+     "charged_cents": 12,
+     "last": {
+      "at": "2026-11-05T12:00:00.000Z",
+      "price_per_gb": 400,
+      "price_per_hour": null
+     }
+    },
+    "fetch_jobs": {
+     "done": 4,
+     "pages": 20,
+     "served": 18,
+     "last_at": "2026-11-05T13:00:00.000Z"
+    },
+    "polled_at": "2026-11-05T17:59:55.000Z"
+   }
+  ],
+  "hosts": {
+   "0xa43f9f32411358c1319cb36027650a206644c131": {
+    "chip": "Apple M4 Pro",
+    "online": true,
+    "slots": 4,
+    "ready": 3,
+    "claims": {
+     "count": 1,
+     "paid": "7",
+     "last": {
+      "block": 55009360,
+      "amount": "7",
+      "period": "2966"
+     }
+    }
+   }
+  },
+  "minion": {},
+  "chain_block": {
+   "number": 55010000
+  }
+ },
+ "https://pod.dstack.soc1024.com/layover-chain/logs?address=0x8FF468c8E447f6cF70f05bEa1cEc1693eC0455cE&topics=0x2efe0d5f05f64dd46ce04f78eb9a5f7553a7906f99fc51a94948e3390b879bba&from=55000000&to=55000199": {
+  "address": "0x8ff468c8e447f6cf70f05bea1cec1693ec0455ce",
+  "from": 55000000,
+  "to": 55000199,
+  "head": 55010000,
+  "head_age_s": 1,
+  "count": 0,
+  "logs": [],
+  "verified_by": "helios-opstack"
+ }
+}

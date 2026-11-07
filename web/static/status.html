@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layover Status</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root{--na:#8A9096;--chip:#ECEEEA}
+@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:#2A2E32}}
+main{gap:16px}
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.card{padding:18px;gap:10px}
+.card h2{display:flex;align-items:center;gap:10px;font-size:17px}
+.row{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line2)}
+.row:first-of-type{border-top:0}
+.row>div{min-width:0;flex:1}
+.name{font-weight:500;overflow-wrap:anywhere}
+.note{overflow-wrap:anywhere}
+.dot{flex:none;width:12px;height:12px;border-radius:50%;margin-top:5px;background:var(--na)}
+.dot.up{background:var(--ok)}.dot.down{background:var(--bad)}
+#summary{font-size:18px;font-weight:600}
+#summary.up{color:var(--ok)}#summary.down{color:var(--bad)}
+.chip{display:inline-block;font-size:12px;line-height:18px;padding:0 7px;border-radius:9px;background:var(--chip);color:var(--ink2);white-space:nowrap}
+.chip.verified{color:var(--ok)}.chip.blocked{color:var(--bad)}.chip.in-progress{color:var(--accent)}.chip.flag{color:var(--muted)}
+.tree{list-style:none;margin:6px 0 4px;padding:0 0 0 14px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:14px}
+.tree li.closed a{text-decoration:line-through;color:var(--muted)}
+.roadmap details>summary{font-size:15px;font-weight:600;padding:4px 0}
+</style>
+</head>
+<body>
+<main>
+<nav></nav>
+<div>
+  <h1>Status</h1>
+  <div id="summary" class="note">loading…</div>
+  <div id="when" class="note"></div>
+  <div class="note">aggregate usage and supply over time: <a href="dashboard.html">the usage dashboard</a></div>
+</div>
+<div class="board">
+  <section class="card"><h2><span class="dot" id="d-instances"></span>Instances</h2><div id="instances"></div></section>
+  <section class="card"><h2><span class="dot" id="d-lines"></span>Lines: latest appraisal</h2><div id="lines"></div></section>
+  <section class="card"><h2><span class="dot" id="d-couch"></span>Couch</h2><div id="couch"></div></section>
+  <section class="card"><h2><span class="dot" id="d-souk"></span>souk-dev</h2><div id="souk"></div></section>
+  <section class="card"><h2><span class="dot" id="d-brokers"></span>Brokers and escrow</h2><div id="brokers"></div></section>
+  <section class="card"><h2><span class="dot" id="d-minion"></span>Minion</h2><div id="minion"></div></section>
+</div>
+<section class="card roadmap"><h2>Roadmap</h2><div id="roadmap"></div></section>
+</main>
+<script type="module">
+import { esc, nav } from "./common.js";
+nav("Status");
+const $ = (id) => document.getElementById(id);
+// Nothing on this page may show an IP address, so any that turns up in fetched text (an error message, say) is removed.
+const IP = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f:])[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![0-9a-f:])/gi;
+const t = (s) => esc(String(s ?? "").replace(IP, "[address removed]"));
+const hx = (s) => s ? t(s.slice(0, 10)) + "…" : "";
+const STALE_MS = 10 * 60e3;
+async function get(u) {
+  const r = await fetch(u, { cache: "no-store" }), body = await r.text();
+  if (!r.ok) throw new Error(`${u}: ${r.status} ${body.slice(0, 300)}`);
+  return JSON.parse(body);
+}
+const ago = (ms) => { const s = (Date.now() - ms) / 1000; return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+// A row is up (true), down (false) or neither (null: nothing to judge yet). name and detail are HTML built with t().
+const row = (ok, name, detail = "") => ({ ok, html: `<div class="row"><span class="dot ${ok === null ? "" : ok ? "up" : "down"}"></span><div><div class="name">${name}</div><div class="note">${detail}</div></div></div>` });
+const real = (as) => as.filter((a) => !a.agent_id.startsWith("test-"));
+
+async function instances() {
+  const [agents, sched] = await Promise.all([get("api/agents"), get("api/probe-scheduler")]);
+  const polls = sched.last_polled ?? {};
+  return real(agents).map((a) => {
+    const seen = polls[a.agent_id] ? Date.parse(polls[a.agent_id]) : null, fresh = seen !== null && Date.now() - seen < STALE_MS;
+    const last = seen === null ? `no probe-request poll seen since the site process started (registered ${ago(Date.parse(a.at))})` : `last poll ${ago(seen)}`;
+    return row(a.verification.ok && fresh, t(a.agent_id), `manifest <span class="mono">${hx(a.facts.manifest_sha256)}</span> · ${a.verification.ok ? "verified" : "<b>not verified</b>"} · ${last} · ${t(a.coarse.region)}, ${t(a.coarse.isp_class)}`);
+  });
+}
+
+async function lines() {
+  return await Promise.all(real(await get("api/agents")).map(async (a) => {
+    const reqs = await get(`api/appraisal-requests?agent_id=${encodeURIComponent(a.agent_id)}`), done = reqs.filter((q) => q.status === "done").at(-1), latest = reqs.at(-1);
+    const pending = latest && latest !== done ? ` · newest request ${t(latest.status)}${latest.error ? ": " + t(latest.error) : ""} (${ago(Date.parse(latest.at))})` : "";
+    if (!done) return row(false, t(a.agent_id), "no completed appraisal" + pending);
+    const v = await get(`api/appraisals/${done.appraisal_id}/verified`);
+    const failed = v.checks.filter((c) => !c.pass).map((c) => t(c.name)).join(", ");
+    return row(v.pass, t(a.agent_id), `${v.pass ? "pass" : "<b>fail</b>: " + failed} · appraisal ${hx(v.id)} ${ago(Date.parse(v.at))}${pending}`);
+  }));
+}
+
+async function couch() {
+  const slots = await get("api/couch-slots"), macs = [...new Set(slots.map((s) => s.mac))];
+  const ready = slots.filter((s) => s.state === "ready").length, verified = slots.filter((s) => s.verified).length;
+  return [row(ready > 0, `${ready} ready · ${verified} verified · ${slots.length} slots`),
+    ...macs.map((m) => {
+      const ss = slots.filter((s) => s.mac === m), states = Object.entries(ss.reduce((o, s) => ({ ...o, [s.state]: (o[s.state] ?? 0) + 1 }), {})).map(([k, n]) => `${n} ${t(k)}`).join(", ");
+      return row(ss[0].online && ss.some((s) => s.state === "ready"), t(m), `${ss[0].online ? "online" : "<b>offline</b>"} · ${states} · heartbeat ${ago(ss[0].updated_at * 1000)}`);
+    })];
+}
+
+async function souk() {
+  const s = await get("api/status/souk-dev");
+  return [row(s.up, s.up ? "up" : "<b>down</b>", `${t(s.url)} · ${s.status ? "HTTP " + s.status + " · " : ""}${s.error ? t(s.error) + " · " : ""}${s.ms} ms · fetched by the site, 5 s timeout`)];
+}
+
+async function brokers() {
+  const [main, lay] = await Promise.all([get("/relay-broker/payments/key"), get("/relay-broker-layover/payments/key")]);
+  const out = [row(true, "relay-broker", `signer <span class="mono">${t(main.address)}</span> · escrow <span class="mono">${hx(main.escrow)}</span>`),
+    row(true, "relay-broker-layover", `signer <span class="mono">${t(lay.address)}</span> · escrow <span class="mono">${hx(lay.escrow)}</span>`),
+    row(main.address.toLowerCase() !== lay.address.toLowerCase(), main.address.toLowerCase() !== lay.address.toLowerCase() ? "signer addresses differ" : "<b>both brokers use the same signer</b>")];
+  const e = await get("api/status/escrow"), bal = Number(BigInt(e.balance)) / 10 ** e.decimals, c = e.last_claimed;
+  out.push(row(lay.escrow.toLowerCase() === e.address.toLowerCase(), `escrow <span class="mono">${t(e.address)}</span>`,
+    `${lay.escrow.toLowerCase() === e.address.toLowerCase() ? "the Layover broker's escrow" : "<b>not the Layover broker's escrow</b> (" + t(lay.escrow) + ")"} · balance ${bal} of token <span class="mono">${hx(e.token)}</span>`));
+  out.push(row(c ? true : null, c ? `last Claimed at block ${c.block}` : "no Claimed event since the site started indexing",
+    c ? `block ${c.block} · tx <span class="mono">${hx(c.tx)}</span> · operator <span class="mono">${hx(c.operator)}</span> · owed ${Number(BigInt(c.cumulative_owed)) / 10 ** e.decimals}` : `blocks ${e.claim_index.since} to ${e.claim_index.scanned_to} indexed, ${e.claim_index.missed_blocks} missed (layover-chain serves only the last ~27 min of logs)`));
+  out.push({ ok: null, html: `<div class="note">balance: public RPC read (${t(new URL(e.rpc).host)}); Claimed logs: Helios-verified read (${t(e.chain)})</div>` });
+  return out;
+}
+
+async function minion() {
+  const r = await fetch("api/minion/rows", { cache: "no-store" });
+  if (r.status === 404) return [row(null, "not running", "the site has no minion endpoint yet (PR #54 not merged)")];
+  if (!r.ok) throw new Error(`api/minion/rows: ${r.status} ${(await r.text()).slice(0, 300)}`);
+  const rows = await r.json(), last = rows.at(-1);
+  if (!last) return [row(null, "no cycles yet", "the minion has posted no rows")];
+  const fields = Object.entries(last).filter(([, v]) => typeof v !== "object").map(([k, v]) => `${t(k)} ${t(v)}`).join(" · ");
+  return [row(true, `last cycle ${last.at ? ago(Date.parse(last.at)) : ""} · ${rows.length} rows`, fields)];
+}
+
+const sections = { instances, lines, couch, souk, brokers, minion };
+async function load() {
+  const results = await Promise.all(Object.entries(sections).map(async ([id, f]) => {
+    let rows;
+    try {
+      rows = await f();
+      if (!rows.length) rows = [row(false, "nothing listed")];
+    } catch (e) {
+      rows = [row(false, "<b>could not read</b>", t(e.message))];
+    }
+    $(id).innerHTML = rows.map((r) => r.html).join("");
+    const down = rows.filter((r) => r.ok === false).length;
+    $("d-" + id).className = "dot " + (down ? "down" : rows.some((r) => r.ok) ? "up" : "");
+    return down ? id : null;
+  }));
+  const bad = results.filter(Boolean);
+  $("summary").className = bad.length ? "down" : "up";
+  $("summary").textContent = bad.length ? `Needs attention: ${bad.join(", ")}` : "Everything is up";
+  $("when").textContent = `checked ${new Date().toLocaleTimeString()} · refreshes every 30 s`;
+}
+
+const AREAS = ["front-door", "couch", "connection", "amin", "host", "payments", "launch", "minion", "quality"];
+async function roadmap() {
+  const r = await get("roadmap.json"), groups = {};
+  for (const i of r.issues) (groups[i.areas[0]] ??= []).push(i);
+  const order = [...AREAS.filter((a) => groups[a]), ...Object.keys(groups).filter((a) => !AREAS.includes(a))];
+  const chip = (cls, s) => s ? `<span class="chip ${cls}">${t(s)}</span>` : "";
+  $("roadmap").innerHTML = `<div class="note">snapshot of ${t(r.repo)} at ${t(r.generated_at)} (web/tools/roadmap-snapshot.sh)</div>` + order.map((a) => {
+    const is = groups[a], open = is.filter((i) => i.state === "open").length;
+    return `<details open><summary>${t(a)} <span class="note">${open} open of ${is.length}</span></summary><ul class="tree">${is.map((i) =>
+      `<li class="${i.state}">${i.state === "closed" ? chip("verified", "closed") : chip(i.status, i.status)} ${chip("", i.day)} <a href="${t(i.url)}">#${i.number} ${t(i.title)}</a> ${i.flags.map((f) => chip("flag", f)).join(" ")}</li>`).join("")}</ul></details>`;
+  }).join("");
+}
+
+roadmap().catch((e) => { $("roadmap").innerHTML = `<div class="err">${t(e.message)}</div>`; });
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

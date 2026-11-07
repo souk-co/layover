@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>resip supplier</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+<nav></nav>
+<div>
+<div class="lbl">Supplier view</div>
+<h1>Your delegate's decisions</h1>
+</div>
+<div id="err" class="err"></div>
+<section class="card">
+<div class="field"><label for="pick">Agent</label><select id="pick"></select></div>
+<div id="facts" class="note"></div>
+</section>
+<section class="card">
+<h2>Instructions</h2>
+<div class="note">Read-only: the text this agent registered. The delegate decides against it.</div>
+<pre id="instructions"></pre>
+</section>
+<section class="card">
+<h2>Totals</h2>
+<div id="totals" class="stats"></div>
+<div class="note">Limits, stated plainly: your own network (router, ISP) still sees which sites your line contacts. Bounty content and buyers stay private from it.</div>
+</section>
+<section class="card">
+<h2>Leases</h2>
+<div class="note">Exclusive and shared leases of this line for a buyer's domains. Domains, prices and the holder stay between the holder and the guest; this shows the window, coverage (each 300 s with a vantage check that saw the same IP and ASN) and the statement's verification.</div>
+<div class="scroll"><table><thead><tr><th>Requested</th><th>Lease</th><th>Status</th><th>Window</th><th>Coverage</th><th>Vantage</th><th>Statement</th></tr></thead><tbody id="leases"></tbody></table></div>
+</section>
+<section class="card">
+<h2>Guest state across runs</h2>
+<div class="note">The guest restarts hourly. Its key, proxy CA, log and leases carry over in a sealed state blob; custody releases the key only to an attested run that starts from the latest state.</div>
+<div id="custody"></div>
+</section>
+<section class="card">
+<h2>Decisions</h2>
+<div class="scroll"><table><thead><tr><th>When</th><th>Bounty</th><th>Decision</th><th>Reason</th><th>Quote</th><th>Forecasts</th><th>Policy</th><th>Result</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+</main>
+<script type="module">
+import { api, esc, short, cents, nav, verdict, fail, leaseCells } from "./common.js";
+nav("Supplier");
+const pick = document.querySelector("#pick");
+let last = "";
+
+async function load() {
+  const agents = await api("agents");
+  if (pick.options.length !== agents.length) {
+    const cur = pick.value || new URLSearchParams(location.search).get("agent_id");
+    pick.innerHTML = agents.map((a) => `<option ${a.agent_id === cur ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
+  }
+  const a = agents.find((x) => x.agent_id === pick.value);
+  if (!a) { document.querySelector("#facts").textContent = "No agents registered yet."; return; }
+  const q = encodeURIComponent(a.agent_id);
+  const bs = (await api("bounties?agent_id=" + q)).reverse(), ls = (await api("leases?agent_id=" + q)).reverse(), c = await api("custody/" + q);
+  const key = JSON.stringify([a, bs, ls, c]);
+  if (key === last) return;
+  last = key;
+  document.querySelector("#facts").innerHTML = `${esc(a.coarse.region)} · ${esc(a.coarse.isp_class)} · residential ${a.coarse.residential ? "yes" : "no"} · registered ${esc(a.at)} · registration attestation <span class="${a.verification.ok ? "ok" : "bad"}">${a.verification.ok ? "verified on site" : "not verified on site"}</span> (App Attest mode ${esc(a.verification.mode ?? "none")})`;
+  document.querySelector("#instructions").textContent = a.instructions ?? "This agent registered no instructions text.";
+  document.querySelector("#leases").innerHTML = ls.length ? ls.map((l) => {
+    return `<tr><td class="mono">${esc(l.at)}</td><td class="mono">${short(l.id)}</td>
+    <td class="${l.status === "active" ? "ok" : l.status === "declined" ? "bad" : ""}">${esc(l.status)}</td>${leaseCells(l)}</tr>`;
+  }).join("") : `<tr><td colspan="7" class="note">No leases yet.</td></tr>`;
+  const rel = c.events.filter((x) => x.kind === "release").at(-1), refused = c.events.filter((x) => x.kind === "refused");
+  document.querySelector("#custody").innerHTML = c.head === null ? `<div class="note">No state committed yet.</div>` :
+    `<div>State seq <strong>${c.seq}</strong>, head <span class="mono">${short(c.head)}</span></div>` +
+    (rel ? `<div class="note">Last released ${esc(rel.at)} to run <span class="mono">${short(rel.run)}</span> at seq ${rel.seq}</div>` : "") +
+    (refused.length ? `<div class="bad">${refused.length} refused in the last ${c.events.length} custody events (stale head: a rollback or a second run)</div>` : "");
+  const ds = bs.filter((b) => b.decision), acc = ds.filter((b) => b.decision.decision === "accept");
+  document.querySelector("#totals").innerHTML = [["Bounties", bs.length], ["Undecided", bs.length - ds.length], ["Accepted", acc.length], ["Declined", ds.length - acc.length],
+    ["Delivered", bs.filter((b) => b.result).length], ["Expired", bs.filter((b) => b.expired).length], ["Quoted total, accepted", cents(acc.reduce((n, b) => n + (b.decision.quote ?? 0), 0))]]
+    .map(([k, v]) => `<div><strong>${v}</strong>${k}</div>`).join("");
+  document.querySelector("#rows").innerHTML = ds.length ? ds.map((b) => `<tr><td class="mono">${esc(b.decision.at)}</td><td class="mono">${short(b.id)}</td>
+    <td class="${b.decision.decision === "accept" ? "ok" : "bad"}">${esc(b.decision.decision)}</td><td>${esc(b.decision.reason)}</td><td>${cents(b.decision.quote)}</td>
+    <td><pre>${esc(JSON.stringify(b.decision.forecasts, null, 1))}</pre></td><td class="mono">${short(b.decision.policy_sha256)}</td>
+    <td>${b.expired ? `<span class="bad">expired: ${esc(b.expired.reason)}</span>` : ""}${b.result ? `<span class="${b.result.verification.ok ? "ok" : "bad"}">${b.result.result.items.length} items, ${b.result.verification.ok ? "verified" : "not verified"}</span>` : ""}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="note">No decisions yet.</td></tr>`;
+}
+pick.addEventListener("change", () => load().catch(fail));
+await load().catch(fail);
+setInterval(() => load().catch(fail), 5000);
+</script>
+</body>
+</html>

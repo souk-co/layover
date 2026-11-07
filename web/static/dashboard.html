@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layover usage and supply</title>
+<link rel="stylesheet" href="style.css">
+<style>
+:root{--na:#8A9096;--chip:#ECEEEA}
+@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:#2A2E32}}
+main{gap:16px}
+main>h2{margin:8px 0 0;font-size:20px}
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.card{padding:18px;gap:10px}
+.card h2{display:flex;align-items:center;gap:10px;font-size:17px}
+.card h3{margin:8px 0 0;font-size:14px}
+.src{margin-top:-4px}
+.row{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line2)}
+.row:first-of-type{border-top:0}
+.row>div{min-width:0;flex:1}
+.name{font-weight:500;overflow-wrap:anywhere}
+.note{overflow-wrap:anywhere}
+.dot{flex:none;width:12px;height:12px;border-radius:50%;margin-top:5px;background:var(--na)}
+.dot.up{background:var(--ok)}.dot.down{background:var(--bad)}
+#summary{font-size:18px;font-weight:600}
+#summary.up{color:var(--ok)}#summary.down{color:var(--bad)}
+.chip{display:inline-block;font-size:12px;line-height:18px;padding:0 7px;border-radius:9px;background:var(--chip);color:var(--ink2);white-space:nowrap;margin:0 2px}
+.tree{list-style:none;margin:6px 0 4px;padding:0 0 0 14px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:14px}
+.num{font-weight:600}
+#overtime{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}
+.fig{display:flex;flex-direction:column;gap:8px;min-width:0}
+.fig .fighead{font-size:14px;font-weight:500}
+.fig svg{width:100%;height:auto;display:block}
+.fig svg text{fill:var(--muted);font-size:9px;font-family:'IBM Plex Mono',monospace}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted)}
+.key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<main>
+<nav></nav>
+<div>
+  <h1>Usage and supply</h1>
+  <div id="lead" class="note">aggregate reads of this site's own API: every number names the endpoint it came from · <b>test-</b> agents are excluded the same way /api/stats excludes them · no IP addresses are shown; any that turn up in fetched text are removed</div>
+  <div id="summary" class="note">loading…</div>
+  <div id="when" class="note"></div>
+</div>
+<h2>Supply</h2>
+<div class="board">
+  <section class="card"><h2><span class="dot" id="d-supply"></span>Macs and couch slots</h2><div class="note src">GET /api/couch-slots — the broker's /fleet heartbeat cut to one row per slot</div><div id="supply"></div></section>
+  <section class="card"><h2><span class="dot" id="d-lines"></span>Home lines</h2><div class="note src">GET /api/agents (registrations) · GET /api/probe-scheduler (last_polled) · GET /api/stats (by_isp_class)</div><div id="lines"></div></section>
+</div>
+<h2>Use</h2>
+<div class="board">
+  <section class="card"><h2><span class="dot" id="d-jobs"></span>Fetch jobs</h2><div class="note src">GET /api/stats · GET /api/bounties · GET /api/bounties/{id}/statement · GET /api/minion/rows</div><div id="jobs"></div></section>
+  <section class="card"><h2><span class="dot" id="d-leases"></span>Leases and traffic</h2><div class="note src">GET /api/stats · GET /api/leases · GET /api/leases/{id}/statement (public form)</div><div id="leases"></div></section>
+  <section class="card"><h2><span class="dot" id="d-stays"></span>Couch stays</h2><div class="note src">GET /api/minion/rows (kind=couch) · GET /api/couch-slots (jobs_served)</div><div id="stays"></div></section>
+  <section class="card"><h2><span class="dot" id="d-settle"></span>Settlement and escrow</h2><div class="note src">GET /api/stats (settled_cents) · GET /api/market (GuestEscrow claims) · layover-chain (LAYC balance) · layover-accounts /api/info (pot, relayer)</div><div id="settle"></div></section>
+</div>
+<section class="card"><h2>Over time — daily, last 14 days (UTC)</h2>
+  <div class="note">one bar per UTC day, counted from each record's timestamp; hover a bar for the day and count</div>
+  <div id="overtime"></div>
+</section>
+</main>
+<script type="module">
+import { esc, nav, credits } from "./common.js";
+nav("Usage");
+const $ = (id) => document.getElementById(id);
+// Nothing on this page may show an IP address, so any that turns up in fetched text (an error message, say) is removed.
+const IP = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f:])[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![0-9a-f:])/gi;
+const t = (s) => esc(String(s ?? "").replace(IP, "[address removed]"));
+const hx = (s) => s ? t(s.slice(0, 10)) + "…" : "";
+async function get(u) {
+  const r = await fetch(u, { cache: "no-store" }), body = await r.text();
+  if (!r.ok) throw new Error(`${u}: ${r.status} ${body.slice(0, 300)}`);
+  return JSON.parse(body);
+}
+// Maybe: an endpoint this deploy does not have yet (404) reads as null instead of failing its card.
+async function maybe(u) { try { return await one(u); } catch (e) { if (String(e.message).startsWith(`${u}: 404`)) return null; throw e; } }
+// one(): each URL is fetched once per refresh, however many sections read it.
+let seen = {};
+const one = (u) => seen[u] ??= get(u);
+const ago = (ms) => { const s = Math.max(0, (Date.now() - ms) / 1000); return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`; };
+const fmtB = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} KB` : `${Math.round(n)} B`;
+const usd = (nano) => "$" + (nano / 1e9).toFixed(4);
+const real = (x) => !String(x.agent_id ?? "").startsWith("test-");
+// A row is up (true), down (false) or neither (null: nothing to judge). name and detail are HTML built with t().
+const row = (ok, name, detail = "") => ({ ok, html: `<div class="row"><span class="dot ${ok === null ? "" : ok ? "up" : "down"}"></span><div><div class="name">${name}</div><div class="note">${detail}</div></div></div>` });
+const chips = (o) => Object.entries(o).map(([k, n]) => `<span class="chip">${n} ${t(k)}</span>`).join("");
+const num = (n) => `<span class="num">${n}</span>`;
+const rowTime = (r) => { const p = Date.parse(r.posted_at), a = Date.parse(r.at); return isNaN(p) ? a : p; };
+
+async function supply() {
+  const slots = await one("api/couch-slots");
+  const pubs = [...new Set(slots.map((s) => s.publisher))];
+  const states = slots.reduce((o, s) => ({ ...o, [s.state]: (o[s.state] ?? 0) + 1 }), {});
+  const verified = slots.filter((s) => s.verified).length, served = slots.reduce((n, s) => n + (s.jobs_served ?? 0), 0);
+  return [
+    row(pubs.some((p) => slots.find((s) => s.publisher === p).online), `${pubs.length} Mac${pubs.length === 1 ? "" : "s"} · ${slots.length} slots · ${verified} verified · ${served} stays served`,
+      `${chips(states)}<br>state and verified per slot; stays served is jobs_served summed over slots`),
+    ...pubs.map((p) => {
+      const ss = slots.filter((s) => s.publisher === p), m = ss[0];
+      const each = ss.map((s) => `<li>slot ${t(s.slot_id)} — ${t(s.state)}${s.verified ? " · <span class='ok'>verified</span>" : ""}${s.started_at ? ` · run up ${ago(s.started_at * 1000)}` : " · no run started"} · ${s.jobs_served ?? 0} stay${s.jobs_served === 1 ? "" : "s"} served</li>`).join("");
+      const o = m.online_share;
+      return row(m.online, `${t(m.chip)} · publisher ${hx(m.publisher)}`,
+        `${m.online ? "online" : "<b>offline</b>"} · heartbeat ${ago(m.updated_at * 1000)} (broker /fleet updated_at) · ` +
+        `online in ${o.online} of ${o.samples} reads of /fleet by this site since ${t(new Date(o.since).toLocaleString())} (resets when the site restarts) · ${ss.length} slot${ss.length === 1 ? "" : "s"}, ${ss.filter((s) => s.verified).length} verified, ${ss.reduce((n, s) => n + (s.jobs_served ?? 0), 0)} stays served` +
+        `<details><summary>slots</summary><ul class="tree">${each}</ul></details>`);
+    }),
+  ];
+}
+
+async function lines() {
+  const [agents, sched, stats] = await Promise.all([one("api/agents"), one("api/probe-scheduler"), one("api/stats")]);
+  const polls = sched.last_polled ?? {}, rs = agents.filter(real);
+  const by = {};
+  for (const a of rs) (by[a.coarse.isp_class] ??= []).push(a);
+  const out = [row(null, `${rs.length} real home line${rs.length === 1 ? "" : "s"} · ${Object.keys(by).length} ISP class${Object.keys(by).length === 1 ? "" : "es"}`,
+    `${stats.excluded_test_agents} test- agents excluded (excluded_test_agents in GET /api/stats)`)];
+  for (const [cls, xs] of Object.entries(by)) {
+    const jobs = stats.by_isp_class?.[cls]?.bounties ?? null;
+    out.push(row(null, `${t(cls)} — ${xs.length} line${xs.length === 1 ? "" : "s"}${jobs !== null ? ` · ${jobs} fetch jobs` : ""}`,
+      xs.map((a) => {
+        const last = polls[a.agent_id] ? Date.parse(polls[a.agent_id]) : null;
+        return `${t(a.agent_id)} (${/laptop host/i.test(a.instructions) ? "<b>laptop host, may go offline</b>, " : ""}${a.verification?.ok ? "verified" : "<b>not verified</b>"}, registered ${ago(Date.parse(a.at))}${last !== null ? `, last probe poll ${ago(last)}` : ", no probe poll since the site process started"})`;
+      }).join("<br>")));
+  }
+  if (!rs.length) out.push(row(false, "no real lines registered", "GET /api/agents holds only test- agents"));
+  return out;
+}
+
+async function jobs() {
+  const [stats, bounties, rows] = await Promise.all([one("api/stats"), one("api/bounties"), maybe("api/minion/rows")]);
+  const rb = bounties.filter(real);
+  const out = [row(null, `${num(stats.bounties)} posted · ${num(stats.accepted)} accepted · ${num(stats.declined)} declined · ${num(stats.done)} done · ${num(stats.expired)} expired`,
+    "GET /api/stats (test- agents excluded)")];
+  const qa = new Set((rows ?? []).map((r) => r.bounty_id).filter(Boolean));
+  out.push(row(null, `${num(rows?.length ?? 0)} baseline QA rows · ${num(rb.filter((b) => qa.has(b.id)).length)} fetch jobs matched to the minion · ${num(rb.length - rb.filter((b) => qa.has(b.id)).length)} from other buyers`,
+    `QA jobs carry a bounty_id found in GET /api/minion/rows; the job list is GET /api/bounties with test- agents excluded`));
+  // Pages: each job's public statement counts requested URLs and 2xx responses (the URLs themselves stay sealed).
+  const reads = await Promise.allSettled(rb.map((b) => one(`api/bounties/${b.id}/statement`)));
+  const sts = reads.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  const unread = reads.length - sts.length;
+  out.push(row(null, `${num(sts.reduce((n, s) => n + (s.requested ?? 0), 0))} pages requested · ${num(sts.reduce((n, s) => n + (s.served ?? 0), 0))} served (2xx)`,
+    `requested and served summed over one GET /api/bounties/{id}/statement per real job (${sts.length} read${unread ? `, ${unread} unread` : ""})`));
+  const fr = (rows ?? []).filter((r) => r.kind === "fetch");
+  const pages = fr.flatMap((r) => Array.isArray(r.pages) ? r.pages : []);
+  out.push(row(null, `${num(pages.length)} QA pages · ${fmtB(pages.reduce((n, p) => n + (p.bytes ?? 0), 0))}`,
+    "pages[] over kind=fetch rows in GET /api/minion/rows (the baseline-load minion's own fetches)"));
+  const failed = (rows ?? []).filter((r) => r.failed_paid_use).length;
+  out.push(row(failed === 0 && (rows ?? []).length > 0, `${num(failed)} failed paid use${failed === 1 ? "" : "s"}`,
+    "failed_paid_use in GET /api/minion/rows: a use the minion paid for that did not deliver"));
+  return out;
+}
+
+async function leasesCard() {
+  const [stats, leases] = await Promise.all([one("api/stats"), one("api/leases")]);
+  const ls = stats.leases;
+  const out = [
+    row(null, `${num(ls.requested)} requested · ${num(ls.active)} active · ${num(ls.ended)} ended · ${num(ls.declined)} declined · ${num(ls.open)} open`, "leases in GET /api/stats (test- agents excluded)"),
+    row(null, credits(ls.settled_cents), "leases.settled_cents in GET /api/stats — the site's staging ledger, not money"),
+  ];
+  const ended = leases.filter((l) => real(l) && l.status === "ended");
+  const reads = await Promise.allSettled(ended.map((l) => one(`api/leases/${l.id}/statement`)));
+  const sts = reads.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  const stated = sts.filter((s) => s.bytes_up !== null || s.bytes_down !== null);
+  const bytes = stated.reduce((n, s) => n + (s.bytes_up ?? 0) + (s.bytes_down ?? 0), 0);
+  out.push(row(null, `${num(fmtB(bytes))} stated lease traffic`,
+    `bytes_up + bytes_down over the public GET /api/leases/{id}/statement of ${ended.length} ended leases (${stated.length} stated bytes; the rest ended without a statement log or predate per-GB pricing)`));
+  return out;
+}
+
+async function stays() {
+  const [rows, slots] = await Promise.all([maybe("api/minion/rows"), one("api/couch-slots")]);
+  if (rows === null) return [row(null, "no minion rows", "this deploy has no GET /api/minion/rows yet")];
+  const couch = rows.filter((r) => r.kind === "couch");
+  const charged = couch.reduce((n, r) => n + (r.charged_nano_usd ? Number(r.charged_nano_usd) : 0), 0);
+  const failed = couch.filter((r) => r.failed_paid_use).length;
+  const out = [
+    row(couch.length === 0 ? null : failed === 0, `${num(couch.length)} QA couch stay${couch.length === 1 ? "" : "s"} (${couch.filter((r) => r.ok).length} ok, ${failed} failed paid use${failed === 1 ? "" : "s"}) · ${usd(charged)} of broker wallet charged`,
+      `kind=couch rows in GET /api/minion/rows; charged_nano_usd is the wallet's broker-ledger delta per stay (nano-USD)`),
+    row(null, `${num(slots.reduce((n, s) => n + (s.jobs_served ?? 0), 0))} stays served by the fleet`,
+      "jobs_served summed over GET /api/couch-slots — the broker's own counter, every guest run on a slot"),
+  ];
+  if (couch.length) out.push({ ok: null, html: `<div class="row"><span class="dot"></span><div><details><summary>recent QA stays</summary><ul class="tree">${
+    couch.slice(-10).reverse().map((r) => `<li>${t(r.agent_id)} — ${ago(rowTime(r))} — ${r.ok ? "ok" : "<b>failed</b>"}${r.error ? `: ${t(r.error)}` : ""}${r.paid === false ? " (not paid)" : ""}</li>`).join("")
+  }</ul></details></div></div>` });
+  return out;
+}
+
+// GuestEscrow, paid in LAYC (6 decimals): the escrow the accounts service and the kit pay into. Its address and claims come from
+// /api/market, its LAYC balance from layover-chain (Helios-verified), the starter pot and relayer from the accounts service.
+const layc = (v) => `${num((Number(BigInt(String(v))) / 1e6).toLocaleString())} LAYC`;
+async function settle() {
+  const [stats, m, info] = await Promise.all([one("api/stats"), one("api/market"), one("../layover-accounts/api/info")]);
+  const g = m.escrows.guest_escrow, b = await one(`../layover-chain/read?contract=layc&fn=balanceOf(address)&args=${g.address}`);
+  const cs = Object.values(m.hosts).map((h) => h.claims.guest_escrow).filter(Boolean), last = Math.max(...cs.map((c) => c.last_block ?? -1));
+  const same = info.escrow.toLowerCase() === g.address.toLowerCase(), funded = BigInt(info.pot_layc) >= BigInt(info.starter) && BigInt(info.relayer_eth_wei) > 0n;
+  return [
+    row(null, credits(stats.leases.settled_cents), "leases.settled_cents in GET /api/stats — the site's staging ledger, not money"),
+    row(null, `GuestEscrow holds ${layc(b.value[0])}`, `<span class="mono">${t(g.address)}</span> · LAYC balanceOf at block ${t(b.block)} — GET /layover-chain/read (Helios-verified, Base Sepolia)`),
+    row(null, `${layc(cs.reduce((n, c) => n + BigInt(c.paid), 0n))} claimed by hosts over ${num(cs.reduce((n, c) => n + c.pairs, 0))} buyer-terms pairs`,
+      `claims.guest_escrow per host in GET /api/market · ${t(cs.reduce((n, c) => n + c.recent, 0))} recent Claimed events${last >= 0 ? `, last at block ${t(last)}` : ""} · index blocks ${t(m.claim_index.since)} to ${t(m.claim_index.scanned_to)}`),
+    row(same && funded, `accounts pot ${layc(info.pot_layc)} · relayer ${num((Number(BigInt(info.relayer_eth_wei)) / 1e18).toFixed(5))} ETH`,
+      `GET /layover-accounts/api/info · starter ${layc(info.starter)} per new account, paid from the pot · ${same ? "pays into this GuestEscrow" : "<b>escrow " + t(info.escrow) + " is not this GuestEscrow</b>"}${funded ? "" : " · <b>pot or relayer cannot pay the next starter</b>"}`),
+  ];
+}
+
+// --- the over-time figures: daily counts for the last 14 UTC days, drawn as inline SVG, no libraries.
+const DAYS = 14;
+const days = () => { const out = [], n = new Date(); for (let i = DAYS - 1; i >= 0; i--) out.push(new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() - i)).toISOString().slice(0, 10)); return out; };
+const daily = (times) => {
+  const c = Object.fromEntries(days().map((d) => [d, 0]));
+  for (const x of times) { const d = new Date(x); if (!isNaN(d)) { const k = d.toISOString().slice(0, 10); if (k in c) c[k]++; } }
+  return days().map((d) => c[d]);
+};
+// series: [{name, color, values:[count per day]}]; each bar carries a <title> with day and count.
+const chart = (title, note, series) => {
+  const W = 560, H = 152, L = 34, R = 6, T = 12, B = 28, plot = H - T - B, gw = (W - L - R) / DAYS;
+  const max = Math.max(1, ...series.flatMap((s) => s.values)), y = (v) => T + plot * (1 - v / max);
+  let bars = `<text x="${L - 5}" y="${T + 4}" text-anchor="end">${Math.ceil(max)}</text><text x="${L - 5}" y="${T + plot + 3}" text-anchor="end">0</text>`;
+  bars += `<line x1="${L}" x2="${W - R}" y1="${T + plot}" y2="${T + plot}" stroke="var(--line)"/>`;
+  days().forEach((d, i) => {
+    const x0 = L + i * gw, inner = gw - 8, bw = inner / series.length - 1.5;
+    series.forEach((s, k) => {
+      const v = s.values[i];
+      if (v > 0) bars += `<rect x="${(x0 + 4 + k * (inner / series.length)).toFixed(1)}" y="${y(v).toFixed(1)}" width="${Math.max(2, bw).toFixed(1)}" height="${Math.max(1.5, T + plot - y(v)).toFixed(1)}" rx="1" fill="${s.color}"><title>${d}: ${v} ${t(s.name)}</title></rect>`;
+    });
+    if (i % 2 === 1) bars += `<text x="${(x0 + gw / 2).toFixed(1)}" y="${H - 9}" text-anchor="middle">${d.slice(5)}</text>`;
+  });
+  const legend = series.map((s) => `<span class="key"><i style="background:${s.color}"></i>${t(s.name)} Σ${s.values.reduce((a, b) => a + b, 0)}</span>`).join("");
+  return `<div class="fig"><div class="fighead">${t(title)} <span class="note">${t(note)}</span></div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${t(title)}">${bars}</svg><div class="legend">${legend}</div></div>`;
+};
+
+async function overtime() {
+  const [agents, bounties, leases, rows] = await Promise.all([one("api/agents"), one("api/bounties"), one("api/leases"), maybe("api/minion/rows")]);
+  const rb = bounties.filter(real), rl = leases.filter(real), ra = agents.filter(real), rr = rows ?? [];
+  $("overtime").innerHTML = [
+    chart("home lines registered", "at in GET /api/agents (real lines)", [{ name: "registered", color: "var(--accent)", values: daily(ra.map((a) => a.at)) }]),
+    chart("fetch jobs", "at (posted) and result.at (done) in GET /api/bounties (real jobs)", [
+      { name: "posted", color: "var(--accent)", values: daily(rb.map((b) => b.at)) },
+      { name: "done", color: "var(--ok)", values: daily(rb.filter((b) => b.result).map((b) => b.result.at)) },
+    ]),
+    chart("leases", "window.start (started) and window.end (ended) in GET /api/leases (real leases)", [
+      { name: "started", color: "var(--accent)", values: daily(rl.filter((l) => l.window).map((l) => l.window.start)) },
+      { name: "ended", color: "var(--ok)", values: daily(rl.filter((l) => l.window?.end).map((l) => l.window.end)) },
+    ]),
+    chart("baseline QA rows", "posted_at in GET /api/minion/rows (when the site received each row)", [
+      { name: "fetch", color: "var(--accent)", values: daily(rr.filter((r) => r.kind === "fetch").map(rowTime)) },
+      { name: "couch", color: "var(--ok)", values: daily(rr.filter((r) => r.kind === "couch").map(rowTime)) },
+    ]),
+  ].join("");
+}
+
+const sections = { supply, lines, jobs, leases: leasesCard, stays, settle };
+async function load() {
+  seen = {}; // fresh reads each refresh
+  const results = await Promise.all(Object.entries(sections).map(async ([id, f]) => {
+    let rows;
+    try {
+      rows = await f();
+      if (!rows.length) rows = [row(false, "nothing listed")];
+    } catch (e) {
+      rows = [row(false, "<b>could not read</b>", t(e.message))];
+    }
+    $(id).innerHTML = rows.map((r) => r.html).join("");
+    const down = rows.filter((r) => r.ok === false).length;
+    $("d-" + id).className = "dot " + (down ? "down" : rows.some((r) => r.ok) ? "up" : "");
+    return down ? id : null;
+  }));
+  const bad = results.filter(Boolean);
+  $("summary").className = bad.length ? "down" : "up";
+  $("summary").textContent = bad.length ? `Needs attention: ${bad.join(", ")}` : "All sections read";
+  $("when").textContent = `checked ${new Date().toLocaleTimeString()} · refreshes every 60 s · daily buckets are UTC`;
+  overtime().catch((e) => { $("overtime").innerHTML = `<div class="err">${t(e.message)}</div>`; });
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

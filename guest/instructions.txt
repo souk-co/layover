@@ -1,0 +1,1 @@
+Fetch jobs and leases for public pages, such as price checks. Nothing involving logins, forms, signups, checkouts or clicking ads.
