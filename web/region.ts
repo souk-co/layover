@@ -18,6 +18,15 @@ export function publicRegions(value: any, agents: Map<string, Row>, policies: Ma
   const home = !exempt && (agent?.coarse?.residential === true || value.residential === true || value.coarse?.residential === true);
   const result = Object.fromEntries(Object.entries(value).filter(([k]) => k !== "registered_by").map(([k, v]) => [k,
     k === "region" ? publicRegion(v, home, policy.show_state === true) : publicRegions(v, agents, policies, agent ?? (home ? { coarse: { residential: true } } : undefined))]));
+  // A quote authenticates the original whole result, not a public projection of
+  // it. Withhold the quote and its binding details when that signed payload changes;
+  // independently verifying the projection needs a separately signed public result.
+  if (value.kind === "result" && typeof value.attestation === "string" && value.result &&
+      JSON.stringify(result.result) !== JSON.stringify(value.result)) {
+    delete result.attestation;
+    delete result.verification;
+    result.result_redacted = true;
+  }
   // A minion's signed JSON envelope must not bypass the projection applied to its parsed fields.
   if (typeof value.row_json === "string") {
     try {

@@ -95,13 +95,13 @@ def lines(e):
     return [r["line"] for r in e.store.view(e.souk)["resident"] if "line" in r]
 
 
-def lease(e, line, price=20, minutes=30, exclusive=True, price_per_gb=400):
+def lease(e, line, price=20, minutes=30, exclusive=True, price_per_gb=400, quote=None):
     send(e, "B", json.dumps(dict(domains=["Example.com"], category="price_check", minutes=30, max_price=40, exclusive=exclusive)), kind="lease")
     t = newest(e)
     agent(
         e,
         ("runtime.web_fetch", dict(url=f"{RESIP}/api/appraisals/{A_OK}/verified")), ("runtime.web_fetch", dict(url=f"{RESIP}/api/market")),
-        ("record", dict(finding="terms", state="proposed", reason="fits", line=line, price_per_gb=price_per_gb, price=price, minutes=minutes)),
+        ("record", dict(finding="terms", state="proposed", reason="fits", line=line, price_per_gb=price_per_gb, price=price, minutes=minutes) | (quote or {})),
         ("propose", dict(members=["B"], question="Lease example.com on the line for 30 minutes at 20 credits?")),
     )
     q = next(q for q in e.rows("questions").values() if q["thread"] == t)
@@ -808,13 +808,18 @@ FLEET = f"{RESIP}/api/couch-slots"
 MAC = "0xa43f9f32411358c1319cb36027650a206644c131"
 
 
-def couch(e, slot_id=3, accept=True):
-    send(e, "B", json.dumps(dict(task="build and test a Rust crate", minutes=20)), kind="couch")
+def couch(e, slot_id=3, accept=True, minutes=20, browse=None, max_spend_nano_usd=None, quote=None):
+    request = dict(task="build and test a Rust crate", minutes=minutes)
+    if browse is not None:
+        request["browse"] = browse
+    if max_spend_nano_usd is not None:
+        request["max_spend_nano_usd"] = max_spend_nano_usd
+    send(e, "B", json.dumps(request), kind="couch")
     t = newest(e)
-    assert "Fetch" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=slot_id, minutes=20))
+    assert "Fetch" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=slot_id, minutes=minutes))
     agent(e, ("runtime.web_fetch", dict(url=FLEET)),
-          ("record", dict(finding="terms", state="proposed", reason="slot 3 is ready with no error", publisher=MAC.upper().replace("0X", "0x"), slot_id=slot_id, minutes=20)),
-          ("propose", dict(members=["B"], question="Slot 3 of the Mini for 20 minutes at the broker's rate?")))
+          ("record", dict(finding="terms", state="proposed", reason="slot 3 is ready with no error", publisher=MAC.upper().replace("0X", "0x"), slot_id=slot_id, minutes=minutes) | (quote or {})),
+          ("propose", dict(members=["B"], question=f"Slot 3 of the Mini for {minutes} minutes at the broker's rate?")))
     if accept:
         e.answer(next(q for q in e.rows("questions").values() if q["thread"] == t)["id"], "B", "accept", at=20)
         e.deliver()
@@ -824,6 +829,7 @@ def couch(e, slot_id=3, accept=True):
 def stay(t, slot_id=3, **over):
     r = dict(sessionId="df01a744433022cc431fc2f8b8a547e7", relay_peer="12D3KooWAfVNm6U6UZWB5jMudQecRqNy3J3tAjJFCE7NSozx3dwM",
              placement=dict(publisher=MAC, slot_id=slot_id), guestSeconds=4, rateNanoUsdPerSecond="15000", chargedNanoUsd="900000",
+             browse=dict(mode="named", hosts=[], nanoUsdPerSecond="0"),
              closedReason="owner", receiptSigner="0xf5709eb7d33debd83f4e2100bddee9513155aaf4", operator="0x1FBe7a7b3f7a37A967F3d927Abd6f04DB2766c5b",
              wallet="0x64870e5a36afcfa2f21d9b6a878ac34bf95bf480")
     return "stay " + json.dumps(r | over)
@@ -835,7 +841,8 @@ def test_couch_propose_accept_settle_moves_no_credits(e):
     assert (terms["publisher"], terms["slot_id"], terms["rate_nano_usd_per_second"], terms["task"]) == (MAC, 3, 15000, "build and test a Rust crate")
     posts = json.dumps(e.read(t, "B"))
     assert 'stay_open {\\"publisher\\": \\"' + MAC + '\\", \\"slot_id\\": 3, \\"conversation_id\\": \\"' + t in posts
-    assert "15000 nano-USD per active guest second ($0.0009 per minute, 60 s minimum)" in posts
+    assert "Maximum 18000000 nano-USD ($0.018)" in posts and "60 s minimum" in posts
+    assert terms["max_spend_nano_usd"] == "18000000"
     assert not journal(e, "credits.hold") and ledger(e)["accounts"]["B"] == 1000
     r = e.guarded(t, "credits.hold", dict(thread=t, member="B", amount=1), call_id="couch-hold", origin="program")
     assert r["state"] == "denied" and "No credits move" in r["reason"]
@@ -877,11 +884,103 @@ def test_couch_settlement_must_match_terms(e):
 @pytest.mark.parametrize("browse,rate,ok", [(dict(mode="named", hosts=["redfin.com"]), 15100, True), (dict(mode="named", hosts=["a.com", "b.com"]), 15200, True),
                                             (dict(mode="open", hosts=[]), 20000, True), (dict(mode="named", hosts=["redfin.com"]), 15000, False), (None, 15100, False)])
 def test_couch_settles_at_the_posted_browse_rate(e, browse, rate, ok):
-    t = couch(e)
+    t = couch(e, browse=browse)
     assert e.rows("threads")[t]["records"]["terms"]["browse"] == dict(default="named", open=5000, named=100)
     send(e, "B", stay(t, rateNanoUsdPerSecond=str(rate), chargedNanoUsd=str(60 * rate), **({"browse": browse} if browse else {})), thread=t)
     assert ("settled" in e.rows("threads")[t]["flags"]) == ok
     assert ok or f"its rate is {rate}, not the posted" in json.dumps(e.read(t, "B"))
+
+
+def couch_open_args(e, t):
+    return [json.loads(line.removeprefix("stay_open ")) for event in e.read(t, "B") if event["kind"] == "Output"
+            for line in event["payload"]["text"].splitlines() if line.startswith("stay_open ")]
+
+
+def test_couch_budget_extra_field_does_not_change_a_lease_card(e):
+    t = lease(e, enroll(e), quote=dict(max_spend_nano_usd="900000"))
+    question = next(q for q in e.rows("questions").values() if q["thread"] == t)
+    assert "Maximum 900000 nano-USD" not in question["prompt"]
+    assert e.rows("threads")[t]["records"]["terms"]["price"] == 20
+    assert ledger(e)["accounts"]["B"] == 980 and len(journal(e, "credits.hold")) == 1
+
+
+@pytest.mark.parametrize("minutes,browse,rate,cap,dollars", [
+    (1, None, 15000, "900000", "0.0009"),
+    (60, None, 15000, "54000000", "0.054"),
+    (2, dict(mode="named", hosts=["a.com", "b.com"]), 15200, "1824000", "0.001824"),
+    (1, dict(mode="open", hosts=[]), 20000, "1200000", "0.0012"),
+])
+def test_couch_spend_cap_is_quoted_before_acceptance(e, minutes, browse, rate, cap, dollars):
+    t = couch(e, accept=False, minutes=minutes, browse=browse)
+    terms = e.rows("threads")[t]["records"]["terms"]
+    question = next(q for q in e.rows("questions").values() if q["thread"] == t)
+    assert terms["rate_nano_usd_per_second"] == rate and terms["max_spend_nano_usd"] == cap
+    assert f"Maximum {cap} nano-USD (${dollars})" in question["prompt"]
+    assert "Accepting authorizes this maximum" in question["prompt"]
+    assert not couch_open_args(e, t), "requesting minutes does not authorize a purchase before acceptance"
+    e.answer(question["id"], "B", "accept", at=20)
+    e.deliver()
+    [opened] = couch_open_args(e, t)
+    assert opened["max_spend_nano_usd"] == cap
+    assert opened["browse"] == (browse or dict(mode="named", hosts=[]))
+    assert opened["operation_id"] == terms["operation_id"]
+    assert opened["expected_rate_nano_usd_per_second"] == str(rate)
+    assert not journal(e, "credits.hold")
+
+
+def test_couch_cap_and_operation_are_program_set_and_stable_on_repeated_instructions(e):
+    t = couch(e, quote=dict(max_spend_nano_usd="999999999", operation_id="0" * 32, rate_nano_usd_per_second=1,
+                           browse_terms=dict(mode="open", hosts=[])))
+    [opened] = couch_open_args(e, t)
+    assert opened["max_spend_nano_usd"] == "18000000" and opened["browse"] == dict(mode="named", hosts=[])
+    parts = opened["operation_id"].split("-")
+    assert list(map(len, parts)) == [8, 4, 4, 4, 12] and parts[2][0] == "8" and parts[3][0] in "89ab"
+    send(e, "B", "open", thread=t)
+    send(e, "B", "open", thread=t)
+    assert couch_open_args(e, t) == [opened] * 3
+    other = couch(e)
+    assert couch_open_args(e, other)[0]["operation_id"] != opened["operation_id"]
+    send(e, "B", stay(t), thread=t)
+    send(e, "B", "open", thread=t)
+    assert couch_open_args(e, t) == [opened] * 3, "a settled operation must not generate another purchase"
+
+
+def test_couch_quote_cannot_exceed_request_budget_or_pad_a_larger_ceiling(e):
+    send(e, "B", json.dumps(dict(task="test", minutes=20, max_spend_nano_usd="900000")), kind="couch")
+    t = newest(e)
+    e.guarded(t, "runtime.web_fetch", dict(url=FLEET), call_id="cap-fleet", origin="agent")
+    e.deliver()
+    args = dict(finding="terms", state="proposed", reason="fits", publisher=MAC, slot_id=3, minutes=20)
+    assert "exceeds the request's cap" in denied(e, t, "record", args)
+    assert not e.rows("questions") and not e.rows("threads")[t]["records"]
+    agent(e, ("record", args | dict(minutes=1)), ("propose", dict(members=["B"], question="One minute?")))
+    assert e.rows("threads")[t]["records"]["terms"]["max_spend_nano_usd"] == "900000"
+    other = couch(e, minutes=1, max_spend_nano_usd="999999999")
+    assert couch_open_args(e, other)[0]["max_spend_nano_usd"] == "900000"
+
+
+def test_couch_rejects_budget_below_minimum_and_malformed_authority(e):
+    for extra in (dict(max_spend_nano_usd=900000), dict(max_spend_nano_usd="0"), dict(max_spend_nano_usd="0900000"),
+                  dict(browse={"mode": "open", "hosts": ["a.com"]}), dict(browse={"mode": "named", "hosts": ["-a.com"]}),
+                  dict(max_price=1)):
+        send(e, "B", json.dumps(dict(task="test", minutes=1) | extra), kind="couch")
+    assert not e.rows("threads")
+    send(e, "B", json.dumps(dict(task="test", minutes=1, max_spend_nano_usd="899999")), kind="couch")
+    t = newest(e)
+    e.guarded(t, "runtime.web_fetch", dict(url=FLEET), call_id="minimum-fleet", origin="agent")
+    e.deliver()
+    assert "exceeds the request's cap" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=3, minutes=1))
+
+
+def test_couch_settlement_cannot_expand_spend_or_browsing(e):
+    t = couch(e, minutes=1)
+    send(e, "B", stay(t, guestSeconds=61, chargedNanoUsd="915000"), thread=t)
+    assert "exceeds the accepted spending cap" in said(e, t)
+    send(e, "B", stay(t, browse=dict(mode="open", hosts=[])), thread=t)
+    assert "browsing differs from the accepted terms" in said(e, t)
+    assert "settled" not in e.rows("threads")[t]["flags"]
+    send(e, "B", stay(t, guestSeconds=60), thread=t)
+    assert "settled" in e.rows("threads")[t]["flags"]
 
 
 def test_couch_declined(e):
@@ -995,6 +1094,32 @@ def test_couch_fit_cannot_be_eased_by_the_stay_fields(e, monkeypatch):
     t, kept = level_fleet(e, monkeypatch, [dict(card_error="unknown level")])
     assert kept == []  # a row whose card failed to expand is not a fitting row
     assert "does not fit this stay" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=0, minutes=20))
+
+
+def test_couch_fit_duration_does_not_expand_the_accepted_spending_cap(e, monkeypatch):
+    browse = dict(mode="named", hosts=["a.com", "b.com"])
+    cards = [dict(max_stay_s=3600, perks=["gpu"]),
+             dict(max_stay_s=7200, perks=["gpu"], availability=dict(kind="hours", hours=["22:00", "06:00"]))]
+    t, kept = level_fleet(e, monkeypatch, cards, minutes=20, duration_s=7200, start="2026-11-06T23:00:00Z",
+                         needs_perks=["gpu"], browse=browse, max_spend_nano_usd="18240000")
+    assert kept == [1]
+    agent(e, ("record", dict(finding="terms", state="proposed", reason="two-hour host window fits", publisher=MAC, slot_id=1, minutes=20)),
+          ("propose", dict(members=["B"], question="Accept this stay?")))
+    terms = e.rows("threads")[t]["records"]["terms"]
+    question = next(q for q in e.rows("questions").values() if q["thread"] == t)
+    # Host fit needs two hours; the accepted purchase is 20 active minutes, including the named-host surcharge.
+    assert terms["max_spend_nano_usd"] == "18240000" and terms["rate_nano_usd_per_second"] == 15200
+    assert "Maximum 18240000 nano-USD ($0.01824)" in question["prompt"]
+    assert not couch_open_args(e, t)
+    e.answer(question["id"], "B", "accept", at=20)
+    e.deliver()
+    [opened] = couch_open_args(e, t)
+    assert opened["slot_id"] == 1 and opened["browse"] == browse
+    assert opened["max_spend_nano_usd"] == "18240000" and opened["expected_rate_nano_usd_per_second"] == "15200"
+    assert opened["operation_id"] == terms["operation_id"]
+    send(e, "B", "open", thread=t)
+    assert couch_open_args(e, t) == [opened] * 2
+    assert not journal(e, "credits.hold")
 
 
 def join(e, person, roles):

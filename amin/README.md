@@ -1,8 +1,10 @@
 # Layover amin
 
 A custom Souk bundle for the residential-IP market. Its agent, the amin, enrolls Mac lines from attested appraisals,
-matches buyers to lines and follows settlement from the site's public lease statements. The amin never holds or moves payment.
-The program holds souk credits for legacy deals; token-backed leases use GuestEscrow.
+matches buyers to lines and follows settlement from the site's public lease statements. The amin never holds or moves payment:
+the program holds the price in souk credits for fetch jobs and legacy leases. Token-backed leases settle in LAYC through
+GuestEscrow on Base Sepolia. Guests pay hosts for verified service within the agreed deposit or cap; the current
+deployment uses test credits, not cash host earnings.
 
 ## Provenance
 
@@ -59,11 +61,11 @@ funded before launch.
 | statement `open`/`active` | program | sets a 5-minute timer that re-runs the amin, and one 30 s after `window.term_end` when that comes first; a fetch bounty that is not done is reread every minute |
 | `record settle` | amin | statement's `agent_id` is the agreed line; state forced to `released` (declined) or `settled` (ended) |
 | settlement | program | `declined`: release the hold. `ended`: host gets min(price, ⌈(bytes_up + bytes_down) × price_per_gb / 10^9⌉), rounded up so a small lease pays its host at least 1 credit, 0 if `bytes_by_period` is null (a crash statement) and unless `attestation_pass` is true (and `statement_exclusive` true for exclusive terms); a shared deal whose statement says exclusive is paid the same and the settle post says so; buyer gets the rest |
-| `couch` message `{task, minutes}` | buyer | opens a private thread; minutes 1 to 60 (a broker grant lasts at most an hour) |
-| fetch `{{RESIP}}/api/couch-slots` (the site's one-row-per-slot summary of the broker's `/fleet`) | amin | only in a couch thread before acceptance; sets the flag `fresh:fleet`, cleared by every member message |
-| `record terms {publisher, slot_id, minutes}` | amin | this run's couch-slots shows that slot `ready` and `verified` on an `online` Mac; minutes ≤ the request; program fills the rate (15000 nano-USD/s, the broker's posted rate) and the task |
-| accept | buyer | nothing is held; the program posts the exact `stay_open` arguments for the couch MCP tools (`couch/` on main) |
-| `stay <json>` (the `stay_close` output) | buyer | session id is a broker id, placement is the agreed slot, rate is the broker's, charged = max(60, guestSeconds) × rate; recorded once as the stay's settlement record |
+| `couch` message `{task, minutes, browse?, max_spend_nano_usd?, duration_s?, start?, interruptible?, needs_perks?}` | buyer | opens a private thread; minutes 1 to 60 of active use; optional exact browse scope and positive decimal-string quote ceiling in nano-USD; host-fit fields restrict candidate matching without increasing the cap |
+| fetch `{{RESIP}}/api/couch-slots` (the site's one-row-per-slot summary of the broker's `/fleet`) | amin | only in a couch thread before acceptance; sets the flag `fresh:fleet`, cleared by every member message, and stores fitting rows in a `couch_slots` record for later runs |
+| `record terms {publisher, slot_id, minutes}` | amin | this run's couch-slots shows that slot `ready` and `verified` on an `online` Mac and its host card fits the request's duration, start, interruptibility and perks; minutes ≤ the request; program binds browsing (host default if omitted), fills the base rate of 15000 nano-USD/s plus its surcharge, task, cap = max(60, minutes × 60) × rate, and a stable operation UUID; refuses a cap above the buyer's ceiling |
+| propose, then accept | buyer | the program appends the exact maximum in nano-USD and dollars and browsing scope before acceptance; nothing is held; acceptance posts complete capped `stay_open` arguments (`couch/` on main), including `max_spend_nano_usd`, `operation_id`, and `expected_rate_nano_usd_per_second`; `open` repeats them |
+| `stay <json>` (the `stay_close` output) | buyer | session id is a broker id, placement and browsing match the accepted quote, rate is the quoted rate, charged = max(60, guestSeconds) × rate ≤ accepted cap; recorded once as the stay's settlement record |
 | `reference` message `{deal, text, up?}` | buyer or host | the deal thread is a lease settled with state `settled`, a fetch job paid out by `credits.pay_hold`, or a stay with its settlement record (a released hold never qualifies, including deals settled before this revision); the sender is its buyer (opener) or host (the terms' seller; for a stay, the member whose bound wallet equals the terms' publisher, compared case-insensitively; with none, the settlement post says the host cannot leave one); one per side per deal; one line of 1 to 280 characters with no IPv4 address; `up` a bool or absent. Stored as a resident `reference` record `{deal, kind, about, subject, author, text, up, at}`: `about` "host" with `subject` the line's agent_id (a stay: the publisher) or "guest" with `subject` the buyer's person id. A guest reference is stored with the record sealed: the amin's runs see only its text, the buyer's running tally `Host references about buyer <id>: N, u up, d down.` |
 | settlement asks | program | the settlement post asks the buyer for its reference, and a private reply asks the host |
 | `propose` question | program | ends with the host's references (count, up, down, the three latest lines), appended if absent |
@@ -85,6 +87,24 @@ not expose the final signed receipt to the client. Settling a stay from that rec
 A stay that `stay_open` returned always charges at least the 60 s minimum (admission alone produces a receipt), so the
 check `charged = max(60, guestSeconds) × rate` holds for every stay record; a grant ended before admission charges 0, but
 then `stay_open` failed and there is no stay to record.
+
+Every new couch quote has an enforced broker spending cap derived from the accepted active minutes and the posted rate
+including browsing. A request's optional ceiling limits the quote; it does not authorize spending more than the quoted
+minutes cost. The program appends the exact amount to the approval card before acceptance. The cap covers the stay's
+guest and browsing charges, not independent model purchases, and does not set a wall-clock deadline. Broker or guest
+lifetime limits still apply. Both the session CLI and MCP adapter pass the complete terms to the stay verifier. A broker
+rate or browsing scope different from the accepted quote refuses admission and ends the reserved grant; request a new
+quote and acceptance instead of weakening the old terms. The settlement check also requires the accepted rate and scope.
+
+Host-card matching uses `duration_s` (default minutes × 60, checked as at least that duration), optional UTC `start`,
+`interruptible` and `needs_perks`. A daily-hours host needs a start inside its window and enough time before it closes;
+a lid-open host needs explicit interruptibility. Matching reads the card's fields rather than its level name, and a
+`card_error` row never fits. These are candidate constraints, not additional spending authority or a reservation.
+
+The operation UUID is derived from the souk and the request event and stored with the terms. Repeated `open` instructions
+preserve it and every accepted argument. The broker's idempotency binds that operation to the wallet, conversation,
+client peer, selected guest, browsing and cap; a restarted client cannot take it over with a new peer. A new stay needs a
+new accepted quote. Older uncapped quotes cannot open under this flow; their historical settlement records remain valid.
 
 ## Statement and appraisal fields used
 

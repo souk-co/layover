@@ -14,6 +14,8 @@ else
   WEB=$(mktemp -d); trap 'rm -rf "$WEB"' EXIT
   git fetch -q origin web
   git archive origin/web web | tar -x -C "$WEB"
+  ln -s "$PWD/guest" "$WEB/guest"
 fi
-DSMACK=$DSMACK WEB=$WEB uv run --python 3.11 --with-requirements requirements-test.txt python -m pytest -q -p no:cacheprovider couch/dsmack minion accounts/test_deploy.py
+deno test -A --no-check "$WEB/web/server_test.ts" "$WEB/web/lease-action_test.ts" "$WEB/web/bounty-action_test.ts" "$WEB/web/lease-admission_test.ts" "$WEB/web/guest-key_test.ts" "$WEB/web/body_test.ts"
+DSMACK=$DSMACK WEB=$WEB uv run --python 3.11 --with-requirements requirements-test.txt python -m pytest -q -p no:cacheprovider couch/dsmack minion host/test accounts/test_deploy.py
 deno test -A accounts

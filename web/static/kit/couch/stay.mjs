@@ -132,11 +132,15 @@ export class Stay {
   // The terms name a slot (publisher, slot_id); the slot's guest changes each run, so the live one is looked up here.
   // browse is how open the couch's browser is for this stay: {mode: "none" | "named" | "open", hosts}. The host's signed
   // policy bounds it and may price widening; omitted, the host's default applies. Package hosts are always reachable.
-  async open({ publisher, slotId, conversationId, browse, maxSpendNanoUsd, operationId }) {
+  async open({ publisher, slotId, conversationId, browse, maxSpendNanoUsd, operationId, expectedRateNanoUsdPerSecond }) {
     const capped = maxSpendNanoUsd !== undefined || operationId !== undefined;
     need(!capped || (typeof maxSpendNanoUsd === "string" && /^[1-9][0-9]{0,38}$/.test(maxSpendNanoUsd) &&
       typeof operationId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(operationId)),
       "Spend cap needs positive decimal maxSpendNanoUsd and operationId UUID.");
+    need(expectedRateNanoUsdPerSecond === undefined || (typeof expectedRateNanoUsdPerSecond === "string" && /^[1-9][0-9]{0,38}$/.test(expectedRateNanoUsdPerSecond)),
+      "Expected rate must be a positive decimal nano-USD string.");
+    need(browse === undefined || (browse && ["none", "named", "open"].includes(browse.mode) && Array.isArray(browse.hosts) &&
+      browse.hosts.every(host => typeof host === "string") && (browse.mode === "named" || browse.hosts.length === 0)), "Invalid accepted browse scope.");
     need(!this.lease, "A stay is already open: " + this.lease?.sessionId);
     // The first `credit` call opens the wallet's broker account with the broker's starter credit.
     this.creditBefore = await call("/inference/credit", await this.signed("credit"));
@@ -167,7 +171,12 @@ export class Stay {
         typeof this.lease.rateNanoUsdPerSecond === "string" && /^[1-9][0-9]*$/.test(this.lease.rateNanoUsdPerSecond) &&
         BigInt(this.lease.rateNanoUsdPerSecond) * 60n <= BigInt(maxSpendNanoUsd)),
         "Broker did not return the requested active session spend cap; refusing this stay.");
+      need(expectedRateNanoUsdPerSecond === undefined || this.lease.rateNanoUsdPerSecond === expectedRateNanoUsdPerSecond,
+        "Broker rate differs from the accepted quote; request and accept a new quote.");
       need(/^[0-9a-f]{32}$/.test(this.lease.browse?.token), "The broker returned no browse terms for this stay");
+      need(browse === undefined || (this.lease.browse.mode === browse.mode && Array.isArray(this.lease.browse.hosts) &&
+        JSON.stringify([...new Set(this.lease.browse.hosts)].sort()) === JSON.stringify([...new Set(browse.hosts)].sort())),
+        "Broker browsing differs from the accepted quote; request and accept a new quote.");
       need(this.lease.placement?.slot_id === slotId && this.lease.placement.publisher.toLowerCase() === publisher.toLowerCase(),
         `The broker placed the stay on ${JSON.stringify(this.lease.placement)}, not the agreed slot.`);
       need(this.lease.grant?.relay_peer === registration.relay_peer && this.lease.grant.client_peer === clientPeer && this.lease.grant.grant_id === this.lease.sessionId,

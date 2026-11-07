@@ -3,6 +3,7 @@
 // only with an Apple-rooted attestation of an approved CDRegistry build, so no per-device enrollment is pinned here.
 import { cat, checkAssertion, decodeAttestation, hex, sha256, unhex } from "https://raw.githubusercontent.com/amiller/dsmack/0213e04df5bc58bf71882b34a673e53a9a6f3fa0/dstack-compat/secret-release/policy.mjs";
 import { heliosChain } from "./static/kit/couch/chain.mjs";
+import { decodeCbor } from "./static/kit/couch/dsmack/encoding.mjs";
 // The contracts the couch kit trusts: AppleAttestRegistryV1, Canary and the CDRegistry the registry must name.
 import POLICY from "./static/kit/couch/dsmack/sandbox-policy.json" with { type: "json" };
 export { hex, sha256, unhex };
@@ -28,6 +29,20 @@ export const agentBinding = async (encPub: string, caCert: string | null) =>
 export async function facts(attestation: string) {
   const a = await decodeAttestation(unhex(attestation));
   return { run: hex(a.run), manifest_sha256: hex(a.manifest_sha256), key_id: hex(a.key_id) };
+}
+
+// Replay identity uses signed content, not unsigned MessagePack/CBOR wrappers or
+// ECDSA signature encoding. Authenticator data includes the assertion counter, so
+// a fresh registration assertion within the same run remains a distinct proof.
+// Unverified test fixtures may omit authenticatorData; production callers verify first.
+export async function registrationIdentity(attestation: string) {
+  try {
+    const a = await decodeAttestation(unhex(attestation)), assertion = decodeCbor(a.assertion);
+    if (!(assertion instanceof Map)) throw new Error("assertion must be a CBOR map");
+    const auth = assertion.get("authenticatorData") ?? new Uint8Array();
+    if (!(auth instanceof Uint8Array)) throw new Error("authenticatorData must be bytes");
+    return hex(await sha256(new TextEncoder().encode(canonical({ key_id: hex(a.key_id), client_data_hash: hex(a.client_data_hash), authenticator_data: hex(auth) }))));
+  } catch (e) { throw new Bad("registration attestation does not decode: " + (e as Error).message); }
 }
 
 // One chain for every verify, each read kept READ_TTL_MS (a key, the registry's build and the canary change rarely; a canary burn

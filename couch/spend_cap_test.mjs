@@ -34,7 +34,7 @@ async function cappedWorld(ack) {
   const types = { MacLink: [{ name: "kid", type: "bytes32" }, { name: "publisher", type: "address" }, { name: "operator", type: "address" }, { name: "nonce", type: "uint64" }] };
   const signature = await owner.signTypedData(domain, types, link);
   const stay = new Stay(Wallet.createRandom().privateKey);
-  const ended = [];
+  const ended = [], admitted = [];
   let registration;
   const word = n => BigInt(n).toString(16).padStart(64, "0");
   globalThis.fetch = async (url, init) => {
@@ -76,8 +76,8 @@ async function cappedWorld(ack) {
     } else throw Error("unexpected URL " + u);
     return new Response(JSON.stringify(value));
   };
-  stay.connect = async () => { stay.environment = { commandTimeoutSeconds: 120 }; stay.tools = []; return { close: async () => {} }; };
-  return { stay, ended };
+  stay.connect = async () => { admitted.push(true); stay.environment = { commandTimeoutSeconds: 120 }; stay.tools = []; return { close: async () => {} }; };
+  return { stay, ended, admitted };
 }
 const ackOf = (rate, cap) => ({ maxSpendNanoUsd: cap, operationId, conversationId: "t", active: true, rateNanoUsdPerSecond: rate });
 const cappedOpen = (stay, cap) => stay.open({ publisher, slotId: 0, conversationId: "t", maxSpendNanoUsd: cap, operationId });
@@ -109,6 +109,35 @@ test("a raised broker rate is honoured at exactly rate x 60 and refused one nano
   assert.equal(below.ended.length, 1);
 });
 
+test("an accepted quote refuses changed or missing broker rates before admission even when the cap fits", async () => {
+  for (const rate of ["15001", "14999", undefined]) {
+    const { stay, ended, admitted } = await cappedWorld(ackOf(rate, "1800000"));
+    await assert.rejects(stay.open({ publisher, slotId: 0, conversationId: "t", maxSpendNanoUsd: "1800000", operationId,
+      expectedRateNanoUsdPerSecond: "15000" }), /spend cap|rate differs from the accepted quote/);
+    assert.deepEqual(admitted, []);
+    assert.equal(ended.length, 1);
+    assert.equal(stay.lease, null);
+  }
+});
+
+test("an accepted quote binds browse scope and quoted rate before admission", async () => {
+  const browse = { mode: "named", hosts: ["shop.example"] };
+  const args = { publisher, slotId: 0, conversationId: "t", maxSpendNanoUsd: "1800000", operationId,
+    expectedRateNanoUsdPerSecond: "15000", browse };
+  const exact = await cappedWorld(ackOf("15000", "1800000"));
+  try {
+    await exact.stay.open(args);
+    assert.equal(exact.admitted.length, 1);
+  } finally { if (exact.stay.lease) await exact.stay.end(); }
+  for (const scope of [{ mode: "open", hosts: [] }, { mode: "named", hosts: ["other.example"] }]) {
+    const { stay, ended, admitted } = await cappedWorld({ ...ackOf("15000", "1800000"), browse: { ...scope, token: "a".repeat(32) } });
+    await assert.rejects(stay.open(args), /browsing differs from the accepted quote/);
+    assert.deepEqual(admitted, []);
+    assert.equal(ended.length, 1);
+    assert.equal(stay.lease, null);
+  }
+});
+
 // The session client's own cap validation, before any broker contact.
 const tools = ["bash"].map(name => ({ name, description: name, inputSchema: { type: "object" } }));
 const terms = { publisher: "0xhost", slot_id: 3, conversation_id: "thread-1" };
@@ -128,4 +157,17 @@ test("the session client accepts a 39-digit canonical cap and refuses zero, lead
   await invoke("open", { ...terms, max_spend_nano_usd: widest, operation_id: operationId });
   assert.equal(stay.calls[0][1].maxSpendNanoUsd, widest);
   assert.equal(stay.calls[0][1].operationId, operationId);
+});
+
+test("the session client forwards the complete accepted quote and rejects malformed expected rates", async () => {
+  const stay = fakeStay(), browse = { mode: "named", hosts: ["shop.example"] };
+  await controller(stay, tools)("open", { ...terms, browse, max_spend_nano_usd: "900000", operation_id: operationId,
+    expected_rate_nano_usd_per_second: "15000" });
+  assert.deepEqual(stay.calls[0][1], { publisher: terms.publisher, slotId: terms.slot_id, conversationId: terms.conversation_id,
+    browse, maxSpendNanoUsd: "900000", operationId, expectedRateNanoUsdPerSecond: "15000" });
+  for (const bad of [15000, "0", "015000", "+15000", "15000.0"]) {
+    const invalid = fakeStay();
+    await assert.rejects(controller(invalid, tools)("open", { ...terms, expected_rate_nano_usd_per_second: bad }), /Expected rate/);
+    assert.deepEqual(invalid.calls, []);
+  }
 });

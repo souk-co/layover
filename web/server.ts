@@ -1,11 +1,12 @@
 // resip staging site, in its own webhost container: append-only JSON records in ctx.dataDir/records.jsonl, plus an in-memory ciphertext relay for
 // proxy streams. The webhost strips /resip-staging.
-import { agentBinding, Bad, binding, canonical, facts, hex, sha256, unhex, verify } from "./verify.ts";
+import { agentBinding, Bad, binding, canonical, facts, hex, registrationIdentity, sha256, unhex, verify } from "./verify.ts";
 import { seal } from "./static/common.js";
 import { publicRegions } from "./region.ts";
 import { operatorsOf } from "./owners.ts";
 import { checkGuestKey } from "./guest-key.ts";
 import { admissionSnapshot, checkAdmission } from "./lease-admission.ts";
+import { freshGuestAction, GUEST_ACTION_AUDIENCE, readGuestAction, sameGuestRunner, verifyGuestAction } from "./guest-action.ts";
 import ADMISSION_CONFIG from "./admission-config.json" with { type: "json" };
 import { APPRAISAL, DRAND, type Kind, latestRound, PROBE, randomness, scan } from "./schedule.ts";
 
@@ -154,7 +155,7 @@ async function state(rs: Rec[]) {
     if (r.kind === "decision") Object.assign(bounties.get(r.bounty_id)!, { decision: r, status: r.decision === "accept" ? "accepted" : "declined" });
     if (r.kind === "result") {
       const result = { ...r };
-      later(result, r.attestation, await once(r, "binding", () => binding(new TextEncoder().encode(canonical(r.result)))), sameRun(agents.get(r.agent_id)!));
+      later(result, r.attestation, await once(r, "binding", () => binding(new TextEncoder().encode(canonical(r.result)))), r.registration ?? sameRun(agents.get(r.agent_id)!));
       Object.assign(bounties.get(r.bounty_id)!, { result, status: "done" });
     }
     if (r.kind === "appraisal_request") requests.set(r.id, { ...r, status: "open" });
@@ -185,7 +186,7 @@ async function state(rs: Rec[]) {
     if (r.kind === "lease_vantage") l.vantage.push(r);
     if (r.kind === "lease_end") {
       const end = { ...r };
-      later(end, r.attestation, await once(r, "binding", () => binding(new TextEncoder().encode(canonical(r.statement)))), sameRun(agents.get(r.agent_id)!));
+      later(end, r.attestation, await once(r, "binding", () => binding(new TextEncoder().encode(canonical(r.statement)))), r.registration ?? sameRun(agents.get(r.agent_id)!));
       Object.assign(l, { end, status: "ended" });
     }
   }
@@ -345,6 +346,60 @@ async function allowed(a: Rec) {
   return { ...a, verification: { ...a.verification, ok: a.verification.ok && check.ok, checks: [...a.verification.checks, check] } };
 }
 
+type AuthorizedAction = { payload: Rec; base: Rec; duplicate: Rec | null; append: (record: Rec) => Promise<Rec> };
+async function authorizeGuestAction(ctx: Ctx, rs: Rec[], agents: Map<string, Rec>, target: Rec,
+  resource: "lease" | "bounty", action: string, body: Rec): Promise<AuthorizedAction> {
+  const name = resource + " action";
+  const input = await readGuestAction(body, { audience: ctx.env?.GUEST_ACTION_AUDIENCE ?? GUEST_ACTION_AUDIENCE,
+    agent_id: target.agent_id, resource, id: target.id, action });
+  const fingerprint = hex(await sha256(new TextEncoder().encode(canonical(input.authorization))));
+  const replay = (rows: Rec[]) => {
+    const previous = rows.find(r => r.agent_id === target.agent_id && r.authorization?.nonce === input.message.nonce);
+    if (!previous) return null;
+    if (previous.authorization.request_sha256 !== fingerprint) throw new Conflict(`${name}: nonce was already used for a different request`);
+    // A committed request may be retried after response loss, restart, expiry or
+    // guest rotation. Its state change and any souk push are not applied again.
+    return { ...previous, duplicate: true };
+  };
+  const duplicate = replay(rs);
+  if (duplicate) return { payload: input.payload, base: {}, duplicate, append: async () => duplicate };
+  const agent = agents.get(target.agent_id), prior = rs.findLast(r => r.kind === "agent" && r.agent_id === target.agent_id);
+  must(agent, `${name}: agent is not registered`);
+  const registered = await checked(agent!.attestation, await agentBinding(agent!.enc_pub, agent!.ca_cert ?? null));
+  must(registered.ok, `${name}: guest registration does not verify`);
+  await verifyGuestAction(input, registered.facts, cfg.verify);
+  // Registration may describe a disallowed workload; a valid runner signature
+  // alone does not admit it or establish the current host operator's ownership.
+  const custody = await custodyGet(target.agent_id);
+  must(custody.allowed?.manifests.includes(registered.facts.manifest_sha256) && custody.allowed?.os_image_hashes.includes(registered.facts.os_image_hash),
+    `${name}: guest measurement is not currently allowed by custody`);
+  must(typeof custody.operator === "string" && (await cfg.operators(registered.facts.key_id)).some(x => x.toLowerCase() === custody.operator.toLowerCase()),
+    `${name}: registered runner is not linked to the current host operator`);
+  // Keep replay metadata only. The proof's payload digest binds private content
+  // without storing the full action proof or duplicating encrypted receipts.
+  const base = { [resource + "_id"]: target.id, agent_id: target.agent_id,
+    authorization: { nonce: input.message.nonce, issued_at: input.message.issued_at, request_sha256: fingerprint }, registration: registered.facts };
+  const commit = (record: Rec) => leaseLock("agent:" + ctx.dataDir + ":" + target.agent_id, async () => {
+    // Slow body/quote/custody checks happen outside this shared registration lock.
+    const current = await records(ctx), duplicate = replay(current);
+    if (duplicate) return duplicate;
+    const latest = current.findLast(row => row.kind === "agent" && row.agent_id === target.agent_id);
+    if (latest !== prior) throw new Conflict(`${name}: registration changed during validation`);
+    const live = await state(current), entry = (resource === "lease" ? live.leases : live.bounties).get(target.id);
+    const required = action === "decision" ? "open" : resource === "lease" ? "active" : "accepted";
+    must(entry?.status === required, `${resource} is ${entry?.status ?? "missing"}, not ${required}`);
+    freshGuestAction(input.message);
+    await append(ctx, record);
+    return record;
+  });
+  return { payload: input.payload, base, duplicate: null, append: commit };
+}
+
+const publicBounty = (b: Rec) => {
+  const row = (r: Rec | null) => { if (!r) return null; const { authorization: _auth, registration: _registration, ...visible } = r; return visible; };
+  return { ...b, decision: row(b.decision), result: row(b.result) };
+};
+
 // --- the public dashboard's minute series: like the scheduler, it runs after API requests, at most one row a minute, and appends
 // {t, ready, busy, bounties_done, leases} to stats-history.jsonl in the data dir. Only counts: no regions, IPs or emails. The
 // newest row's t is the clock (so a restart does not double-sample), and rows older than HISTORY_KEEP_MS are retired on write.
@@ -382,6 +437,7 @@ export async function sampleHistory(ctx: Ctx) {
 }
 let sampling: Promise<unknown> | null = null;
 const sampleSoon = (ctx: Ctx) => { sampling ??= sampleHistory(ctx).catch((e) => console.error("history sample", e)).finally(() => { sampling = null; }); };
+
 // A lease is private between its holder and the guest. The public form has no domains, counts, prices or account:
 // the window, whether the buyer asked for an exclusive or a shared lease (exclusive: null on leases posted before the choice existed),
 // whether the statement claims exclusivity and how many other leases shared its domains, the guest's vantage checks summarized (periods: each 300 s
@@ -562,19 +618,41 @@ async function api(req: Request, path: string, ctx: Ctx) {
     // A public attestation can be replayed: an account session alone cannot claim its registration.
     if (registered) must(bound?.toLowerCase() === registered.address.toLowerCase() ||
       (await cfg.operators(key_id)).some(x => x.toLowerCase() === registered.address.toLowerCase()), "account wallet does not operate this registration");
+    // Guest renewals retain console ownership. Changing that registration field
+    // requires a fresh assertion as well as the account/operator check above.
     const registrar = registered?.address ?? rs.findLast(r => r.kind === "agent" && r.agent_id === agent_id)?.registered_by;
     const r = { kind: "agent", ...(registrar ? { registered_by: registrar } : {}), agent_id, enc_pub, ca_cert: ca_cert ?? null, attestation, ...proof, coarse: { region: coarse.region, isp_class: coarse.isp_class, residential: coarse.residential }, instructions: instructions ?? null };
-    await leaseLock("agent:" + ctx.dataDir + ":" + agent_id, async () => {
-      // All registrations share this narrow append lock. An old proof validation
-      // must not overwrite a newer registration that arrived while it awaited checks.
-      if (guest_key !== undefined) {
-        const prior = rs.findLast(row => row.kind === "agent" && row.agent_id === agent_id);
-        const latest = (await records(ctx)).findLast(row => row.kind === "agent" && row.agent_id === agent_id);
-        if (latest !== prior) throw new Conflict("guest_key: registration changed during validation");
+    const identity = await registrationIdentity(attestation);
+    const saved = await leaseLock("registrations:" + ctx.dataDir, () => leaseLock("agent:" + ctx.dataDir + ":" + agent_id, async () => {
+      const current = await records(ctx), prior = rs.findLast(row => row.kind === "agent" && row.agent_id === agent_id);
+      const latest = current.findLast(row => row.kind === "agent" && row.agent_id === agent_id);
+      const identities = await Promise.all(current.filter(row => row.kind === "agent").map(async row =>
+        ({ row, id: await once(row, "registration-identity", async () => {
+          try { return await registrationIdentity(row.attestation); }
+          catch (e) {
+            // Older smoke-test rows could contain an invalid assertion while still
+            // having decodable facts. They cannot authenticate production actions.
+            if (row.agent_id.startsWith("test-") && e instanceof Bad) return null;
+            throw e;
+          }
+        }) })));
+      const seen = identities.find(x => x.id === identity);
+      const fields = (row: Rec) => canonical({ registered_by: row.registered_by?.toLowerCase() ?? null, agent_id: row.agent_id, enc_pub: row.enc_pub, ca_cert: row.ca_cert ?? null,
+        guest_key: row.guest_key ?? null, coarse: row.coarse, instructions: row.instructions ?? null });
+      // A public quote cannot be re-encoded, reassigned to another agent owned by
+      // the same operator, or used to restore a previously superseded registration.
+      if (seen && seen.row.agent_id !== agent_id) throw new Conflict("registration attestation belongs to another agent_id");
+      if (latest && identities.find(x => x.row === latest)!.id === identity) {
+        if (fields(latest) !== fields(r)) throw new Conflict("registration attestation was already used with different fields");
+        return { ...latest, duplicate: true };
       }
+      if (seen) throw new Conflict("registration attestation was superseded");
+      // A validation started before a newer registration must not overwrite it.
+      if (latest !== prior) throw new Conflict("registration changed during validation");
       await append(ctx, r);
-    });
-    return await allowed({ ...r, verification });
+      return r;
+    }));
+    return await allowed({ ...saved, verification });
   }
   const mr = path.match(/^\/api\/agents\/([A-Za-z0-9._:-]{1,64})\/appraisal-requests$/);
   if (mr && req.method === "POST") {
@@ -691,7 +769,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
   }
   const q = url.searchParams;
   const filter = (xs: Rec[]) => xs.filter((b) => ["agent_id", "status", "buyer_key", "terms_hash", "account"].every((k) => !q.get(k) || b[k] === q.get(k)));
-  if (path === "/api/bounties" && req.method === "GET") return filter([...bounties.values()]);
+  if (path === "/api/bounties" && req.method === "GET") return filter([...bounties.values()].map(publicBounty));
   if (path === "/api/bounties" && req.method === "POST") {
     const { agent_id, buyer_key, enc } = body;
     must(agents.has(agent_id), "agent_id: not registered");
@@ -711,35 +789,39 @@ async function api(req: Request, path: string, ctx: Ctx) {
   if (m) {
     const b = bounties.get(m[1]);
     must(b, "no such bounty");
-    if (!m[2] && req.method === "GET") return b;
+    if (!m[2] && req.method === "GET") return publicBounty(b!);
+    must(req.method === "POST" && ["/decision", "/result"].includes(m[2]), "POST action required");
+    const auth = await authorizeGuestAction(ctx, rs, agents, b!, "bounty", m[2].slice(1), body);
+    if (auth.duplicate) return auth.duplicate;
     if (m[2] === "/decision" && req.method === "POST") {
       must(b!.status === "open", `bounty is ${b!.status}, not open`);
-      const { decision, reason, quote, forecasts, policy_sha256 } = body;
+      const { decision, reason, quote, forecasts, policy_sha256 } = auth.payload;
       must(decision === "accept" || decision === "decline", 'decision: "accept" | "decline"');
       must(typeof reason === "string", "reason: string");
       must(quote === null || quote === undefined || Number.isInteger(quote), "quote: integer cents or null");
       must(policy_sha256 === null || policy_sha256 === undefined || isHex(policy_sha256, 32), "policy_sha256: 32-byte hex or null");
-      noIp(body, "decision");
-      const r = { kind: "decision", bounty_id: b!.id, agent_id: b!.agent_id, decision, reason, quote: quote ?? null, forecasts: forecasts ?? null, policy_sha256: policy_sha256 ?? null };
+      noIp(auth.payload, "decision");
+      const r = { kind: "decision", ...auth.base, decision, reason, quote: quote ?? null, forecasts: forecasts ?? null, policy_sha256: policy_sha256 ?? null };
       const push = soukPush(ctx), st = await bountyStatement({ ...b!, decision: r, status: "declined" });
-      await append(ctx, r);
-      if (decision === "decline") push(st);
-      return r;
+      const saved = await auth.append(r);
+      if (decision === "decline" && !saved.duplicate) push(st);
+      return saved;
     }
     if (m[2] === "/result" && req.method === "POST") {
       must(b!.status === "accepted", `bounty is ${b!.status}, not accepted`);
-      const { result, attestation } = body;
+      const { result, attestation } = auth.payload;
       must(result && result.bounty_id === b!.id && Array.isArray(result.items), "result: {bounty_id matching the URL, items:[...], ...}");
       must(result.items.every((i: Rec) => i && typeof i === "object" && !Array.isArray(i)), "result.items: each item is an object");
       must(isHex(attestation), "attestation: lowercase hex VersionedAttestation");
       noIp(result, "result");
-      const verification = await checked(attestation, await binding(new TextEncoder().encode(canonical(result))), sameRun(agents.get(b!.agent_id)!));
+      const verification = await checked(attestation, await binding(new TextEncoder().encode(canonical(result))), auth.base.registration);
+      must(verification.ok && sameGuestRunner(verification.facts, auth.base.registration), "result: attestation does not authenticate the registered guest");
       // The statement is built before the record is written, so nothing after the write can fail the guest's POST.
-      const r = { kind: "result", bounty_id: b!.id, agent_id: b!.agent_id, result, attestation }, push = soukPush(ctx);
+      const r = { kind: "result", ...auth.base, result, attestation }, push = soukPush(ctx);
       const st = await bountyStatement({ ...b!, result: { ...r, verification, at: new Date().toISOString() }, status: "done" });
-      await append(ctx, r);
-      push(st);
-      return { ...r, verification };
+      const saved = await auth.append(r);
+      if (!saved.duplicate) push(st);
+      return { ...saved, verification };
     }
   }
   if (path === "/api/accounts/faucet" && req.method === "POST") {
@@ -798,29 +880,36 @@ async function api(req: Request, path: string, ctx: Ctx) {
       return l;
     }
     must(req.method === "POST", "POST required");
-    const base = { lease_id: l!.id, agent_id: l!.agent_id };
+    const base: Rec = { lease_id: l!.id, agent_id: l!.agent_id };
+    let payload = body;
+    let appendAction: (r: Rec) => Promise<Rec> = async () => { throw new Bad("lease action: authorization required"); };
+    if (["/decision", "/vantage", "/end"].includes(ml[2])) {
+      const auth = await authorizeGuestAction(ctx, rs, agents, l!, "lease", ml[2].slice(1), body);
+      if (auth.duplicate) return auth.duplicate;
+      payload = auth.payload;
+      Object.assign(base, auth.base);
+      appendAction = auth.append;
+    }
     if (ml[2] === "/decision") {
       must(l!.status === "open", `lease is ${l!.status}, not open`);
-      const { decision, reason, price_per_gb, term_end, forecasts, policy_sha256 } = body;
+      const { decision, reason, price_per_gb, term_end, forecasts, policy_sha256 } = payload;
       must(decision === "accept" || decision === "decline", 'decision: "accept" | "decline"');
       must(typeof reason === "string", "reason: string");
       must(decision === "decline" || (Number.isInteger(price_per_gb) && price_per_gb > 0 && !isNaN(Date.parse(term_end)) && isHex(policy_sha256, 32)),
         "accept needs price_per_gb (integer cents per 10^9 bytes > 0), term_end (ISO time), policy_sha256");
-      noIp(body, "decision");
+      noIp(payload, "decision");
       if (l!.admission && decision === "accept") must(price_per_gb === l!.admission.price_per_gb && Date.parse(term_end) > Date.now() && Date.parse(term_end) <= Date.now() + 305000, "token admission: decision exceeds standing terms");
       const r = { kind: "lease_decision", ...base, decision, reason, price_per_gb: price_per_gb ?? null, term_end: term_end ?? null, forecasts: forecasts ?? null, policy_sha256: policy_sha256 ?? null };
-      await append(ctx, r);
-      return r;
+      return await appendAction(r);
     }
     if (ml[2] === "/vantage") {
       must(l!.status === "active", `lease is ${l!.status}, not active`);
-      const { at, ip_commit, asn, same_ip, same_asn } = body;
+      const { at, ip_commit, asn, same_ip, same_asn } = payload;
       must(isHex(ip_commit, 32) && Number.isInteger(asn) && typeof same_ip === "boolean" && typeof same_asn === "boolean" && !isNaN(Date.parse(at)),
         "vantage: {at, ip_commit: 32-byte hex, asn: integer, same_ip, same_asn: booleans}");
-      noIp(body, "vantage");
+      noIp(payload, "vantage");
       const r = { kind: "lease_vantage", ...base, checked_at: at, ip_commit, asn, same_ip, same_asn };
-      await append(ctx, r);
-      return r;
+      return await appendAction(r);
     }
     if (ml[2] === "/topup") {
       const account = await bearer(req), { amount } = body;
@@ -834,14 +923,15 @@ async function api(req: Request, path: string, ctx: Ctx) {
     }
     if (ml[2] === "/end") {
       must(l!.status === "active", `lease is ${l!.status}, not active`);
-      const { end_reason, statement, attestation, receipts_enc } = body;
-      must(typeof end_reason === "string" && statement?.lease_id === l!.id && isHex(attestation), "end: {end_reason, statement for this lease, attestation, receipts_enc}");
+      const { end_reason, statement, attestation, receipts_enc } = payload;
+      must(typeof end_reason === "string" && statement?.kind === "layover-lease-statement/2" && statement.lease_id === l!.id && statement.agent_id === l!.agent_id &&
+        statement.end_reason === end_reason && isHex(attestation), "end: {end_reason, statement for this agent and lease with the same end_reason, attestation, receipts_enc}");
       must(receipts_enc === null || (isHex(receipts_enc?.epk, 32) && isHex(receipts_enc?.nonce, 12) && isHex(receipts_enc?.ct)), "receipts_enc: sealed {epk, nonce, ct} or null");
       noIp(statement, "statement");
-      const verification = await checked(attestation, await binding(new TextEncoder().encode(canonical(statement))), sameRun(agents.get(l!.agent_id)!));
+      const verification = await checked(attestation, await binding(new TextEncoder().encode(canonical(statement))), base.registration);
+      must(verification.ok && sameGuestRunner(verification.facts, base.registration), "end: statement attestation does not authenticate the registered guest");
       const r = { kind: "lease_end", ...base, end_reason, statement, attestation, receipts_enc };
-      await append(ctx, r);
-      return { ...r, verification };
+      return { ...await appendAction(r), verification };
     }
   }
   // The baseline-load minion's rows (layover minion/minion.py): one per paid use, signed by the minion's pinned key over
