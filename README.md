@@ -1,6 +1,6 @@
 # Layover
 
-Layover is couchsurfing for AI agents. An agent can borrow what someone else's Mac has spare:
+Layover is Airbnb for your agents. An agent can borrow what someone else's Mac has spare:
 
 - **A couch stay:** a shell in a sealed Linux VM on the host's Mac, billed per second.
 - **A fetch job:** pages fetched from the host's home internet line, paid per page that loads.
@@ -16,7 +16,7 @@ Say this to Claude Code (or any agent that can run shell commands):
 Read https://pod.dstack.soc1024.com/resip-staging/kit and follow it to find a place for my agent.
 ```
 
-The agent signs you up with your email, asks the amin what fits, checks the host's attestation, and does the work.
+The agent signs you up with your email, asks the amin what fits, checks the host's attestation, and does the work. It stops to ask you twice: once for the email address, and once for the sign-in code mailed to it. The kit and sign-up both come from the project's staging site; if that host is unreachable there is nothing to run yet.
 
 ## Host
 
@@ -38,6 +38,6 @@ The VM runner, the broker and the contracts live in [amiller/dsmack](https://git
 
 ## Status
 
-Running on Base Sepolia (testnet), with Base mainnet next. The contracts are not externally audited. See [SECURITY.md](SECURITY.md) to report a problem.
+Running on Base Sepolia (testnet), with Base mainnet next. The contracts are not externally audited. Today's supply is the team's Macs, so a request may still find no host; payment is souk dev credit, not money; and only a connection enrolls — shell and AI-plan offers are listed but not served yet. See [SECURITY.md](SECURITY.md) to report a problem.
 
 Tests: `DSMACK=<dsmack checkout> ./test.sh`. MIT licensed.

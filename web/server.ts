@@ -2,6 +2,7 @@
 // proxy streams. The webhost strips /resip-staging.
 import { agentBinding, Bad, binding, canonical, facts, hex, sha256, unhex, verify } from "./verify.ts";
 import { seal } from "./static/common.js";
+import { publicRegions } from "./region.ts";
 import { operatorsOf } from "./owners.ts";
 import { checkGuestKey } from "./guest-key.ts";
 import { admissionSnapshot, checkAdmission } from "./lease-admission.ts";
@@ -209,14 +210,14 @@ async function state(rs: Rec[]) {
     if (l.admission) { l.paid_bytes = l.token_budget_bytes; l.charged = null; continue; }
     if (l.decision.price_per_gb) {
       const st = l.end?.statement, price = l.decision.price_per_gb;
-      l.paid_bytes = l.admission ? l.token_budget_bytes : Math.floor((l.funds * GB) / price);
+      l.paid_bytes = Math.floor((l.funds * GB) / price);
       l.charged = st?.log ? Math.min(l.funds, ((st.bytes_up + st.bytes_down) * price) / GB) : 0;
     } else {
       const start = Date.parse(l.decision.at), price = l.decision.price_per_hour, stop = l.end ? Date.parse(l.end.at) : now;
       l.paid_until = new Date(start + (l.funds / price) * HOUR).toISOString();
       l.charged = Math.min(l.funds, (price * (stop - start)) / HOUR);
     }
-    if (l.end && !l.admission) move(l.account, l.funds - l.charged, `refund of unspent funds, lease ${l.id}`, l.end.at);
+    if (l.end) move(l.account, l.funds - l.charged, `refund of unspent funds, lease ${l.id}`, l.end.at);
   }
   const verify = async () => { await Promise.all(jobs.map((f) => f())); };
   return { requests, appraisals, agents, bounties, leases, accounts, probeRequests, probes, anchors, verify };
@@ -265,6 +266,9 @@ async function tick(ctx: Ctx) {
 
 // The broker's /fleet (~40 KB of signed heartbeats) cut to one row per slot, small enough for the amin's web_fetch to read inline.
 export const BROKER_FLEET = "https://pod.dstack.soc1024.com/relay-broker/fleet";
+// The broker's own network status, proxied same-origin for the public dashboard: its CORS policy is not guaranteed, and the
+// page must not depend on the pod being reachable from a visitor's browser.
+export const BROKER_NETWORK = "https://pod.dstack.soc1024.com/relay-broker/network";
 // Per publisher, how many of this site's /fleet reads found it online: kept in memory since this process started (SINCE).
 const SINCE = new Date().toISOString(), seenOnline = new Map<string, { online: number; samples: number }>();
 // The host's posted browse surcharges (operator.json browse.price, nano-USD per second; the broker's browseRate reads a missing
@@ -340,6 +344,44 @@ async function allowed(a: Rec) {
   const check = await custodyCheck(a.agent_id, a.verification.facts);
   return { ...a, verification: { ...a.verification, ok: a.verification.ok && check.ok, checks: [...a.verification.checks, check] } };
 }
+
+// --- the public dashboard's minute series: like the scheduler, it runs after API requests, at most one row a minute, and appends
+// {t, ready, busy, bounties_done, leases} to stats-history.jsonl in the data dir. Only counts: no regions, IPs or emails. The
+// newest row's t is the clock (so a restart does not double-sample), and rows older than HISTORY_KEEP_MS are retired on write.
+export const HISTORY_EVERY_MS = 60e3, HISTORY_KEEP_MS = 7 * 86400e3, HISTORY_FILE = "stats-history.jsonl";
+const historyLines = new Map<string, Rec[]>();
+async function history(ctx: Ctx): Promise<Rec[]> {
+  let rows = historyLines.get(ctx.dataDir);
+  if (rows) return rows;
+  try {
+    rows = (await Deno.readTextFile(ctx.dataDir + "/" + HISTORY_FILE)).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) rows = [];
+    else throw e;
+  }
+  historyLines.set(ctx.dataDir, rows!);
+  return rows!;
+}
+export async function sampleHistory(ctx: Ctx) {
+  const rows = await history(ctx), now = Date.now();
+  if (rows.some((r) => Date.parse(r.t) > now - HISTORY_EVERY_MS)) return false;
+  const { bounties, leases } = await state(await records(ctx)), real = (id: string) => !id.startsWith("test-");
+  const slots = await couchSlots(), row = { t: new Date(now).toISOString(),
+    ready: slots.filter((s) => s.online && s.state === "ready" && s.verified).length,
+    busy: slots.filter((s) => s.state === "busy").length,
+    bounties_done: [...bounties.values()].filter((b) => real(b.agent_id) && b.result).length,
+    leases: [...leases.values()].filter((l) => real(l.agent_id) && l.status === "active").length };
+  rows.push(row);
+  const keep = rows.filter((r) => Date.parse(r.t) > now - HISTORY_KEEP_MS);
+  if (keep.length === rows.length) await Deno.writeTextFile(ctx.dataDir + "/" + HISTORY_FILE, JSON.stringify(row) + "\n", { append: true });
+  else {
+    historyLines.set(ctx.dataDir, keep);
+    await Deno.writeTextFile(ctx.dataDir + "/" + HISTORY_FILE, keep.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  }
+  return true;
+}
+let sampling: Promise<unknown> | null = null;
+const sampleSoon = (ctx: Ctx) => { sampling ??= sampleHistory(ctx).catch((e) => console.error("history sample", e)).finally(() => { sampling = null; }); };
 // A lease is private between its holder and the guest. The public form has no domains, counts, prices or account:
 // the window, whether the buyer asked for an exclusive or a shared lease (exclusive: null on leases posted before the choice existed),
 // whether the statement claims exclusivity and how many other leases shared its domains, the guest's vantage checks summarized (periods: each 300 s
@@ -425,11 +467,58 @@ async function bearer(req: Request) {
   return hex(await sha256(unhex(m![1])));
 }
 
-// Stored as received (row_json + sig), so anyone can recheck the minion's signature on GET /api/minion/rows.
-// posted_at is when the site received the row, so every row has a timestamp even if the minion's own `at` is absent.
+// Same-origin, fixed-path proxy: browsers never need account-service CORS and emails stay in POST bodies.
+const ACCOUNTS_URL = "https://pod.dstack.soc1024.com/layover-accounts/api/";
+async function accountCall(path: string, req: Request, body?: Rec) {
+  return await upstream("layover-accounts /" + path, ACCOUNTS_URL + path, 180000, {
+    method: body ? "POST" : "GET", headers: { "content-type": "application/json", ...(req.headers.has("authorization") ? { authorization: req.headers.get("authorization")! } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}) });
+}
+async function consoleAccount(req: Request) {
+  must(/^Bearer \S+$/.test(req.headers.get("authorization") ?? ""), "Not signed in: account session required");
+  const user = await accountCall("balance", req);
+  must(typeof user.email === "string" && /^0x[0-9a-f]{40}$/i.test(user.address), "account service did not return an identity");
+  return user;
+}
+async function owns(a: Rec, address: string) {
+  const wallet = address.toLowerCase();
+  if (a.registered_by?.toLowerCase() === wallet) return true;
+  const custody = await custodyGet(a.agent_id);
+  if (custody.operator?.toLowerCase() === wallet) return true;
+  return (await cfg.operators(a.facts.key_id)).some(x => x.toLowerCase() === wallet);
+}
+const regionPolicies = (rs: Rec[]) => new Map(rs.filter(r => r.kind === "region_privacy").map(r => [r.agent_id, r]));
+async function consoleApi(req: Request, path: string, ctx: Ctx) {
+  if (["/api/console/login", "/api/console/verify"].includes(path)) {
+    must(req.method === "POST", "POST required");
+    const b = await jsonBody(req);
+    return await accountCall(path.endsWith("/login") ? "login" : "verify", req,
+      path.endsWith("/login") ? { email: b.email } : { challenge_id: b.challenge_id, code: b.code });
+  }
+  must(path === "/api/console/lines" || path === "/api/console/privacy", "unknown console endpoint");
+  const user = await consoleAccount(req), rs = await records(ctx), st = await state(rs);
+  const lines = (await Promise.all([...st.agents.values()].filter(a => !a.agent_id.startsWith("test-")).map(async a => await owns(a, user.address) ? a : null))).filter(Boolean) as Rec[];
+  if (path === "/api/console/privacy") {
+    must(req.method === "POST", "POST required");
+    const b = await jsonBody(req);
+    must(lines.some(a => a.agent_id === b.agent_id), "only the line owner can set region privacy");
+    must(typeof b.show_state === "boolean", "show_state: boolean required");
+    must(["home", "rented_exit", "vpn"].includes(b.connection_kind), "connection_kind: home, rented_exit or vpn");
+    await append(ctx, { kind: "region_privacy", agent_id: b.agent_id, show_state: b.show_state, connection_kind: b.connection_kind });
+    return { saved: true };
+  }
+  must(req.method === "GET", "GET required");
+  await st.verify();
+  // This endpoint alone returns full regions, after server-side ownership checks.
+  return { email: user.email, address: user.address, lines: await Promise.all(lines.map(async a => ({ ...await allowed(a),
+    appraisals: await Promise.all([...st.appraisals.values()].filter(p => p.agent_id === a.agent_id).map(appraisalView)),
+    privacy: regionPolicies(rs).get(a.agent_id) ?? { show_state: false, connection_kind: a.coarse.residential ? "home" : "vpn" } }))) };
+}
+
 // The GETs that show a verdict (verification on agents, appraisals, bounty results or lease ends); every other route answers without one.
 const VERIFIED: [RegExp, string][] = [/^\/api\/agents$/, /^\/api\/agents\/[^/]+\/appraisals$/, /^\/api\/appraisals\//, /^\/api\/bounties/, /^\/api\/leases/, /^\/api\/market$/]
   .map((x) => [x, "GET"]);
+// Stored signed minion rows; posted_at is when the site received the row.
 const minionRows = (rs: Rec[]) => rs.filter((r) => r.kind === "minion").map((r) => ({ ...JSON.parse(r.row_json), row_json: r.row_json, sig: r.sig, posted_at: r.at }));
 async function api(req: Request, path: string, ctx: Ctx) {
   const url = new URL(req.url), rs = await records(ctx), { requests, appraisals, agents, bounties, leases, accounts, probeRequests, probes, anchors, verify } = await state(rs);
@@ -469,7 +558,12 @@ async function api(req: Request, path: string, ctx: Ctx) {
       must(latest.operator?.toLowerCase() === proof.guest_key.operator && (await cfg.operators(key_id)).some(x => x.toLowerCase() === proof.guest_key.operator), "guest_key: current operator ownership changed");
       must(latest.allowed?.manifests.includes(verification.facts.manifest_sha256) && latest.allowed?.os_image_hashes.includes(verification.facts.os_image_hash), "guest_key: current measurement changed");
     }
-    const r = { kind: "agent", agent_id, enc_pub, ca_cert: ca_cert ?? null, attestation, ...proof, coarse: { region: coarse.region, isp_class: coarse.isp_class, residential: coarse.residential }, instructions: instructions ?? null };
+    const registered = req.headers.has("authorization") ? await consoleAccount(req) : null;
+    // A public attestation can be replayed: an account session alone cannot claim its registration.
+    if (registered) must(bound?.toLowerCase() === registered.address.toLowerCase() ||
+      (await cfg.operators(key_id)).some(x => x.toLowerCase() === registered.address.toLowerCase()), "account wallet does not operate this registration");
+    const registrar = registered?.address ?? rs.findLast(r => r.kind === "agent" && r.agent_id === agent_id)?.registered_by;
+    const r = { kind: "agent", ...(registrar ? { registered_by: registrar } : {}), agent_id, enc_pub, ca_cert: ca_cert ?? null, attestation, ...proof, coarse: { region: coarse.region, isp_class: coarse.isp_class, residential: coarse.residential }, instructions: instructions ?? null };
     await leaseLock("agent:" + ctx.dataDir + ":" + agent_id, async () => {
       // All registrations share this narrow append lock. An old proof validation
       // must not overwrite a newer registration that arrived while it awaited checks.
@@ -768,6 +862,8 @@ async function api(req: Request, path: string, ctx: Ctx) {
     return minionRows(rs).filter((r) => !url.searchParams.get("agent_id") || r.agent_id === url.searchParams.get("agent_id"));
   }
   if (path === "/api/couch-slots" && req.method === "GET") return await couchSlots();
+  if (path === "/api/broker-network" && req.method === "GET") return await upstream("broker /network", BROKER_NETWORK, 15000);
+  if (path === "/api/stats/history" && req.method === "GET") return (await history(ctx)).filter((r) => Date.parse(r.t) > Date.now() - HISTORY_KEEP_MS);
   if (path === "/api/market" && req.method === "GET") return await cached("market " + ctx.dataDir, () => market(ctx, agents, appraisals, leases, bounties, probeRequests, probes));
   if (path === "/api/stats" && req.method === "GET") {
     const real = (id: string) => !id.startsWith("test-");
@@ -988,7 +1084,7 @@ async function soukDev() {
 }
 
 // A decided or done bounty's statement goes to the IP souk as the doorman's `statement` message: the souk's program settles
-// the fetch job in that step, with no model run polling the statement (QA run 8 waited 31 minutes for one). The guest's
+// the fetch job in that step, without waiting for a model run to poll the statement. The guest's
 // POST does not wait for the souk (a program step there takes seconds); a failed push is logged, and the amin's poll still reads it.
 export function soukPush(ctx: Ctx) {
   const token = ctx.env?.SOUK_DOORMAN_CREDENTIAL;
@@ -1006,7 +1102,7 @@ let refCache: { at: number; rows: Rec[] } | null = null;
 async function references(req: Request, ctx: Ctx) {
   must(req.method === "GET", "GET required");
   const token = ctx.env?.SOUK_DOORMAN_CREDENTIAL;
-  if (!token) throw new Error("SOUK_DOORMAN_CREDENTIAL is not set in this deploy");
+  if (!token) throw new Upstream("references unavailable: SOUK_DOORMAN_CREDENTIAL is not set in this deploy");
   if (!refCache || Date.now() - refCache.at > 30e3) {
     const inbox = await upstream("souk inbox", SOUK_URL + "/api/souk_inbox", 60000, { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" }, body: JSON.stringify({ souk_id: SOUK_ID }) });
     const out = inbox.filter((x: Rec) => x.kind === "Output").map((x: Rec) => x.payload.text as string);
@@ -1028,11 +1124,16 @@ export const kit: Record<string, string> = { "kit/index.txt": "text/plain; chars
   "kit/couch/dsmack/registry.json": json, "kit/couch/browser-setup.sh": "text/x-shellscript; charset=utf-8", "kit/couch/dsmack/sandbox-policy.json": json };
 // layover.js is the line client under its Layover name; resip.js stays for installs that use the old name.
 const alias: Record<string, string> = { "kit/layover.js": "kit/resip.js" };
+async function publicResponse(out: unknown, ctx: Ctx) {
+  const rs = await records(ctx);
+  return publicRegions(out, new Map(rs.filter(r => r.kind === "agent").map(r => [r.agent_id, r])), regionPolicies(rs));
+}
 export async function handler(req: Request, ctx: Ctx) {
   must(ctx?.dataDir, "webhost must provide a persistent dataDir");
   const path = new URL(req.url).pathname;
   if (path.startsWith("/api/")) {
     try {
+      if (path.startsWith("/api/console/")) return Response.json(await consoleApi(req, path, ctx), { headers: { "cache-control": "no-store" } });
       if (path === "/api/signup") return Response.json(await signup(req, ctx), { headers: { "cache-control": "no-store" } });
       if (path === "/api/status/souk-dev") return Response.json(await soukDev(), { headers: { "cache-control": "no-store" } });
       if (path === "/api/status/escrow") return Response.json(await cached("escrow " + ctx.dataDir, () => escrow(ctx)), { headers: { "cache-control": "no-store" } });
@@ -1041,14 +1142,20 @@ export async function handler(req: Request, ctx: Ctx) {
       warmSoon(ctx);
       const out = path === "/api/leases" && req.method === "POST" ? await leaseLock(ctx.dataDir, () => api(req, path, ctx)) : await api(req, path, ctx), headers = { "cache-control": "no-store" };
       tickSoon(ctx);
-      return out === null ? Response.json({ error: "not found" }, { status: 404, headers }) : Response.json(out, { headers });
+      return out === null ? Response.json({ error: "not found" }, { status: 404, headers }) : Response.json(await publicResponse(out, ctx), { headers });
     } catch (e) {
       if (e instanceof Bad || e instanceof SyntaxError) return Response.json({ error: e.message }, { status: e instanceof Conflict ? 409 : e instanceof Limited ? 429 : e instanceof Upstream ? 502 : 400 });
       throw e;
     }
   }
-  const file = path === "/" ? "index.html" : path === "/kit" || path === "/kit/" ? "kit/index.txt" : path.slice(1);
-  if (!/^[a-z]+\.(html|js|css|json)$/.test(file) && !kit[file]) return new Response("not found", { status: 404 });
+  const retired: Record<string, string> = { "index.html": "layover.html", "deals.html": "dashboard.html#deals-tools", "supplier.html": "provider.html", "public.html": "dashboard.html", "leases.html": "dashboard.html#lease-statements" };
+  const target = retired[path.slice(1)];
+  if (target) {
+    const [page, fragment] = target.split("#"), query = new URL(req.url).search;
+    return new Response(null, { status: 302, headers: { location: page + query + (fragment ? "#" + fragment : ""), "cache-control": "no-store" } });
+  }
+  const file = path === "/" ? "layover.html" : path === "/kit" || path === "/kit/" ? "kit/index.txt" : path.slice(1);
+  if (!["layover.html", "provider.html", "dashboard.html", "status.html", "style.css", "common.js", "roadmap.json"].includes(file) && !kit[file]) return new Response("not found", { status: 404 });
   try {
     return new Response(await Deno.readFile(new URL("./static/" + (alias[file] ?? file), import.meta.url)), { headers: { "content-type": kit[file] ?? types[file.split(".")[1]], "cache-control": "no-cache" } });
   } catch (e) {
@@ -1060,6 +1167,9 @@ export default handler;
 
 if (import.meta.main) {
   const [port, dataDir] = Deno.args;
+  // The dashboard's minute series samples on a timer, so history accrues with or without traffic (tests import this module
+  // and call sampleHistory themselves; a request-hook would fetch the broker from every test's handler call).
+  setInterval(() => sampleSoon({ dataDir, env: Deno.env.toObject() }), HISTORY_EVERY_MS);
   Deno.serve({ port: Number(port) }, (req) => handler(req, { dataDir, env: Deno.env.toObject() }));
 }
 

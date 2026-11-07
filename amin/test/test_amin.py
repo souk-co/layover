@@ -891,6 +891,112 @@ def test_couch_declined(e):
     assert "declined or expired" in json.dumps(e.read(t, "B"))
 
 
+def card_fits():
+    """The level-card matcher, exec'd out of souk.py the way the keccak test reads one function."""
+    import ast
+    import re
+    src = (HERE.parent / "souk.py").read_text()
+    ns = dict(re=re)
+    for name in ("epoch", "fits", "inside_window"):
+        fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == name)
+        exec(ast.get_source_segment(src, fn), ns)
+    return ns["fits"]
+
+
+@pytest.mark.parametrize("card,stay,fit", [
+    (dict(max_stay_s=1800), dict(duration_s=1800), True),  # the exact max stay fits
+    (dict(max_stay_s=1800), dict(duration_s=1801), False),  # one second over does not
+    (dict(availability=dict(kind="hours", hours="22:00-06:00")), dict(duration_s=7200, start="2026-11-06T23:00:00Z"), True),  # through a window that wraps midnight
+    (dict(availability=dict(kind="hours", hours="22:00-06:00")), dict(duration_s=3600, start="2026-11-06T05:00:00Z"), True),  # ending exactly at the close
+    (dict(availability=dict(kind="hours", hours="22:00-06:00")), dict(duration_s=3601, start="2026-11-06T05:00:00Z"), False),  # crossing the close
+    (dict(availability=dict(kind="hours", hours=["22:00", "06:00"])), dict(duration_s=7200, start="2026-11-06T23:00:00Z"), True),  # the site's ["HH:MM","HH:MM"] shape, wrapping midnight
+    (dict(availability=dict(kind="hours", hours=["09:00", "17:00"])), dict(duration_s=3601, start="2026-11-06T16:00:00Z"), False),  # crossing the window end
+    (dict(availability=dict(kind="hours", hours="09:00-17:00")), dict(duration_s=3600, start="2026-11-06T16:00:00Z"), True),
+    (dict(availability=dict(kind="hours", hours="09:00-17:00")), dict(duration_s=3601, start="2026-11-06T16:00:00Z"), False),  # crossing the window end
+    (dict(availability=dict(kind="hours", hours="09:00-17:00")), dict(duration_s=3600, start="2026-11-06T08:00:00Z"), False),  # before it opens
+    (dict(availability=dict(kind="hours", hours="09:00-17:00")), dict(duration_s=3600), False),  # no start to place inside the window
+    (dict(availability=dict(kind="always"), max_stay_s=3600), dict(duration_s=3600), True),
+    (dict(availability=dict(kind="lid_open"), max_stay_s=3600), dict(duration_s=3600, interruptible=True), True),
+    (dict(availability=dict(kind="lid_open"), max_stay_s=3600), dict(duration_s=3600), False),  # lid_open takes interruptible requests only
+    (dict(availability=dict(kind="lid_open"), max_stay_s=3600), dict(duration_s=3601, interruptible=True), False),
+    (dict(perks=["gpu", "nvme"]), dict(duration_s=60, needs_perks=["gpu"]), True),  # needs are a subset of the perks
+    (dict(perks=["nvme"]), dict(duration_s=60, needs_perks=["gpu", "pool"]), False),
+    (dict(level="air mattress"), dict(duration_s=1800), True),  # the name alone never decides
+    (dict(), dict(duration_s=1800), True),  # a row without the card fields keeps today's behaviour
+    (dict(max_stay_s=1800), dict(start="2026-11-06T23:00:00Z"), False),  # a constrained card needs the stay's length
+    (dict(max_stay_s=600), dict(minutes=60, duration_s=60), False),  # the stay is at least the task's minutes, so a shrunk duration_s cannot unlock a 10 minute card
+    (dict(availability=dict(kind="hours", hours=["22:00", "06:00"])), dict(minutes=60, duration_s=60, start="2026-11-06T05:30:00Z"), False),  # nor stretch the half hour left before the close
+    (dict(card_error="unknown level"), dict(duration_s=1800), False),  # a card that failed to expand cannot be checked, so it is not a fitting row
+    (dict(availability=dict(kind="hours", hours=["22:00", "22:00"])), dict(duration_s=60, start="2026-11-06T22:00:00Z"), False),  # an equal pair is a zero-length window
+])
+def test_fits_reads_the_card_fields_not_the_level_name(card, stay, fit):
+    assert card_fits()(card, stay) is fit
+
+
+def test_fits_takes_a_fractional_utc_start_too():
+    window = dict(availability=dict(kind="hours", hours="09:00-17:00"))
+    assert card_fits()(window, dict(duration_s=3599, start="2026-11-06T16:00:00.500Z"))
+    assert card_fits()(window, dict(duration_s=3600, start="2026-11-06T16:00:00.000Z"))
+    assert not card_fits()(window, dict(duration_s=3600, start="2026-11-06T16:00:00.500Z"))
+    assert not card_fits()(window, dict(duration_s=3601, start="2026-11-06T16:00:00.500Z"))
+
+
+@pytest.mark.parametrize("bad,why", [
+    (dict(needs_perks="gpu"), "needs_perks must be a list of perk names"),
+    (dict(needs_perks=["gpu", ""]), "needs_perks must be a list of perk names"),
+    (dict(start="2026-11-06 23:00"), "not a UTC timestamp"),
+    (dict(interruptible="yes"), "interruptible must be true or false"),
+    (dict(duration_s="2 hours"), "not a nonnegative integer"),
+])
+def test_couch_request_validates_the_stay_fields(e, bad, why):
+    send(e, "B", json.dumps(dict(task="run tests", minutes=20) | bad), kind="couch")
+    assert why in json.dumps(e.inbox("B"))
+
+
+SLOT3 = FIXTURES["/api/couch-slots"][3]  # the ready, verified slot of an online Mac
+
+
+def level_fleet(e, monkeypatch, cards, minutes=30, **request):
+    """A couch thread whose fleet rows carry host-level cards; returns the thread and the slot ids the program kept."""
+    monkeypatch.setitem(FIXTURES, "/api/couch-slots", [SLOT3 | dict(slot_id=n, **card) for n, card in enumerate(cards)])
+    send(e, "B", json.dumps(dict(task="build and test a Rust crate", minutes=minutes) | request), kind="couch")
+    t = newest(e)
+    e.guarded(t, "runtime.web_fetch", dict(url=FLEET), call_id="fleet:" + t, origin="agent")
+    e.deliver()
+    kept = [x["payload"]["event"] for x in e.store.events(e.souk) if x["kind"] == "Stored" and x["thread"] == t and x["payload"]["event"].get("kind") == "couch_slots"]
+    return t, [r["slot_id"] for r in json.loads(kept[-1]["text"])["slots"]]
+
+
+def test_couch_candidates_are_the_rows_whose_level_card_fits(e, monkeypatch):
+    cards = [dict(level="air_mattress", availability=dict(kind="lid_open", leave_notice_s=300), max_stay_s=3600),
+             dict(),  # a row without the card fields keeps today's behaviour
+             dict(level="futon", availability=dict(kind="hours", hours=["22:00", "08:00"]), max_stay_s=28800, perks=["browse_package_hosts"]),
+             dict(level="suite", availability=dict(kind="always"), max_stay_s=604800, perks=["line", "vpn_exit"])]
+    t, kept = level_fleet(e, monkeypatch, cards, duration_s=7200, start="2026-11-06T23:00:00Z", needs_perks=[])
+    assert kept == [1, 2, 3]  # a two-hour job does not go on the air mattress (max stay 3600 s, lid open)
+    t, kept = level_fleet(e, monkeypatch, [dict(max_stay_s=1800)])  # minutes default the stay: 30 min is 1800 s
+    assert kept == [0]
+    t, kept = level_fleet(e, monkeypatch, [dict(max_stay_s=1799)])
+    assert kept == []
+
+
+def test_couch_terms_need_a_fitting_level_card(e, monkeypatch):
+    t, kept = level_fleet(e, monkeypatch, [dict(level="air mattress", max_stay_s=600), dict(level="guest room", max_stay_s=7200)], duration_s=1800)
+    assert kept == [1]
+    assert "does not fit this stay" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=0, minutes=20))
+    agent(e, ("record", dict(finding="terms", state="proposed", reason="slot 1's card fits a 30 minute stay", publisher=MAC, slot_id=1, minutes=20)),
+          ("propose", dict(members=["B"], question="Slot 1 of the Mini for 20 minutes at the broker's rate?")))
+    assert e.rows("threads")[t]["records"]["terms"]["slot_id"] == 1
+
+
+def test_couch_fit_cannot_be_eased_by_the_stay_fields(e, monkeypatch):
+    t, kept = level_fleet(e, monkeypatch, [dict(level="air mattress", max_stay_s=600)], minutes=60, duration_s=60)
+    assert kept == []  # a duration_s shrunk below the task's minutes cannot unlock a 10 minute card
+    t, kept = level_fleet(e, monkeypatch, [dict(card_error="unknown level")])
+    assert kept == []  # a row whose card failed to expand is not a fitting row
+    assert "does not fit this stay" in denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=0, minutes=20))
+
+
 def join(e, person, roles):
     e.store.db.execute("INSERT INTO persons (id, email) VALUES (?,?)", (person, person.lower() + "@example.com"))
     e.receive(Joined(Member(person, roles), souk=e.souk))

@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Layover Status</title>
+<title>Status · Layover</title>
 <link rel="stylesheet" href="style.css">
 <style>
-:root{--na:#8A9096;--chip:#ECEEEA}
-@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:#2A2E32}}
+:root{--na:#8A9096;--chip:var(--line2)}
+@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:var(--line2)}}
 main{gap:16px}
-.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:16px}
 .card{padding:18px;gap:10px}
 .card h2{display:flex;align-items:center;gap:10px;font-size:17px}
 .row{display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line2)}
@@ -53,7 +53,7 @@ nav("Status");
 const $ = (id) => document.getElementById(id);
 // Nothing on this page may show an IP address, so any that turns up in fetched text (an error message, say) is removed.
 const IP = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f:])[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![0-9a-f:])/gi;
-const t = (s) => esc(String(s ?? "").replace(IP, "[address removed]"));
+const t = (s) => esc(String(s ?? "").replace(/[^\s<>@]+@[^\s<>@]+/g, "[email removed]").replace(IP, "[address removed]"));
 const hx = (s) => s ? t(s.slice(0, 10)) + "…" : "";
 const STALE_MS = 10 * 60e3;
 async function get(u) {
@@ -156,7 +156,7 @@ async function roadmap() {
   $("roadmap").innerHTML = `<div class="note">snapshot of ${t(r.repo)} at ${t(r.generated_at)} (web/tools/roadmap-snapshot.sh)</div>` + order.map((a) => {
     const is = groups[a], open = is.filter((i) => i.state === "open").length;
     return `<details open><summary>${t(a)} <span class="note">${open} open of ${is.length}</span></summary><ul class="tree">${is.map((i) =>
-      `<li class="${i.state}">${i.state === "closed" ? chip("verified", "closed") : chip(i.status, i.status)} ${chip("", i.day)} <a href="${t(i.url)}">#${i.number} ${t(i.title)}</a> ${i.flags.map((f) => chip("flag", f)).join(" ")}</li>`).join("")}</ul></details>`;
+      `<li class="${i.state}">${i.state === "closed" ? chip("verified", "closed") : chip(i.status, i.status)} ${chip("", i.day)} <a href="${t(i.url)}">#${i.number} ${t(i.title.replace(/resip/gi, "Layover"))}</a> ${i.flags.map((f) => chip("flag", f)).join(" ")}</li>`).join("")}</ul></details>`;
   }).join("");
 }
 

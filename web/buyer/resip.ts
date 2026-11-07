@@ -55,7 +55,10 @@ async function verifyAgent(base: string, agentId: string, dir: string) {
 
 async function account(dir: string) {
   const p = dir + "/account.json", agent = read(dir + "/agent.json");
-  try { Deno.statSync(p); } catch { write(p, { secret: rand() }); }
+  try { Deno.statSync(p); } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+    write(p, { secret: rand() });
+  }
   const { secret } = read(p), id = hex(await sha256(unhex(secret)));
   const r = await call(agent.base, "accounts/faucet", {}, secret);
   console.log(`account ${id}: staging balance ${r.balance} cents (not money)`);

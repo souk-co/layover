@@ -1,6 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
-:root{--bg:#F4F5F2;--card:#FFFFFF;--line:#D9DCD6;--line2:#ECEEEA;--ink:#16181A;--ink2:#2B3035;--muted:#4F565E;--accent:#2457C5;--ok:#1F6B3A;--bad:#A3321F;--field:#FBFBFA;--fieldline:#C5C9C2}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',system-ui,sans-serif}
+@import url("https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap");
+:root{--paper:#FAF7F0;--ink:#1A1712;--faint:#6B655A;--rule:#C9C2B2;--link:#1A3B8B;--quote:#3B3428;--bg:var(--paper);--card:var(--paper);--line:var(--rule);--line2:var(--rule);--ink2:var(--quote);--muted:var(--faint);--accent:var(--link);--ok:#286039;--bad:#A3321F;--field:var(--paper);--fieldline:var(--rule)}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Georgia,"Times New Roman",serif;font-size:17px;line-height:1.55;overflow-wrap:break-word}
 a{color:var(--accent)}
 main{max-width:1180px;margin:0 auto;padding:32px 16px 64px;display:flex;flex-direction:column;gap:24px}
 nav{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:14px}
@@ -9,7 +9,7 @@ h1{margin:0;font-size:30px;font-weight:600}
 h2{margin:0;font-size:20px;font-weight:600}
 .lbl{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px;display:flex;flex-direction:column;gap:16px;min-width:0}
-.mono{font-family:'IBM Plex Mono',monospace;font-size:13px;word-break:break-all}
+.mono{font-family:"Courier Prime","Courier New",monospace;font-size:13px;word-break:break-all}
 .note{font-size:13px;color:var(--muted)}
 .scroll{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:14px}
@@ -25,10 +25,27 @@ button{font:inherit;font-weight:600;font-size:15px;padding:12px 20px;min-height:
 .err{color:var(--bad);white-space:pre-wrap}
 .box{background:var(--bg);border-radius:8px;padding:14px 16px;font-size:14px;display:flex;flex-direction:column;gap:8px}
 .stats{display:flex;flex-wrap:wrap;gap:32px}.stats div strong{display:block;font-size:28px;font-weight:600}
-pre{white-space:pre-wrap;margin:0;font-family:'IBM Plex Mono',monospace;font-size:13px}
+pre{white-space:pre-wrap;margin:0;font-family:"Courier Prime","Courier New",monospace;font-size:13px}
 details summary{cursor:pointer;font-size:13px}
-@media (prefers-color-scheme:dark){:root{--bg:#141618;--card:#1C1F22;--line:#33383D;--line2:#2A2E32;--ink:#ECEEEA;--ink2:#D3D6D1;--muted:#A2A8AE;--accent:#7FA6F5;--ok:#6CC28A;--bad:#F08A76;--field:#16191B;--fieldline:#3E444A}}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--paper:#171512;--ink:#E8E2D4;--faint:#9B9484;--rule:#3E3A30;--link:#9FBBF5;--quote:#C9C2B2;--ok:#8BC59B;--bad:#F08A76}}
 .strip{display:flex;flex-wrap:wrap;gap:4px}.strip span{width:14px;height:14px;border-radius:3px;background:var(--line)}.strip .p{background:var(--ok)}.strip .f{background:var(--bad)}
 .bars{display:flex;align-items:flex-end;gap:2px;height:120px;border-bottom:1px solid var(--line)}.bars div{flex:1;background:var(--accent);border-radius:4px 4px 0 0;min-height:1px}
 .days{display:flex;gap:2px;font-size:11px;color:var(--muted)}.days span{flex:1;text-align:center}
 .stats strong .note{font-size:13px;font-weight:400}
+
+*{box-sizing:border-box}
+h1,h2,h3,nav,.lbl,button,summary{font-family:"Courier Prime","Courier New",monospace}
+h1,h2,h3{line-height:1.25;font-weight:700}
+h1{font-size:1.9rem}h2{font-size:1.05rem}
+nav{font-size:.82rem;gap:4px 0;align-items:center}
+nav a{white-space:nowrap}nav .sep{color:var(--muted);margin:0 .6em}
+nav a[aria-current=page]{color:var(--ink);font-weight:700;text-decoration:none}
+.card,.box{border-radius:0}.card{border-width:1px 0 0;padding:20px 0}
+button{border-radius:2px;background:var(--ink);color:var(--paper)}
+input,textarea,select{max-width:100%;border-radius:2px}
+input[type=checkbox],input[type=radio]{width:auto}
+[hidden]{display:none!important}
+main>*{min-width:0}form{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+form.grid{display:grid}.field input,.field textarea{width:100%}
+:focus-visible{outline:2px solid var(--link);outline-offset:3px}
+@media(max-width:600px){main{padding:24px 20px 48px;gap:20px}.card{padding:16px 0}.grid{grid-template-columns:minmax(0,1fr)}.stats{gap:16px}nav{line-height:2}td,th{padding:8px}.scroll{max-width:100%}}

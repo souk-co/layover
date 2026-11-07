@@ -1,6 +1,6 @@
 // deno test -A --no-check web/server_test.ts (verify.ts has pre-existing type errors)
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
-import { BROKER_FLEET, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, handler, hostLevel, PROBE_EXPIRE_MS, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
+import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
 
 Deno.test("a probe request unanswered for 10 minutes after filing is expired, pass false; a newer one stays open", async () => {
   const dataDir = await Deno.makeTempDir(), ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -345,6 +345,62 @@ Deno.test("couch-slots: a leveled host's rows carry level and its expanded field
   }
 });
 
+Deno.test("stats history: one row a minute of the site's own reads, test- agents excluded, 7 days kept, served at /api/stats/history", async () => {
+  const dataDir = await Deno.makeTempDir(), at = new Date().toISOString();
+  const att = (await Deno.readTextFile(new URL(import.meta.url))).match(/const att = "([0-9a-f]+)"/)![1];
+  configure({ verify: (async () => ({ ok: true, mode: null, facts: { key_id: "k", manifest_sha256: "m", os_image_hash: "o", run: "r" }, checks: [], checked_at: "" })) as never });
+  await Deno.writeTextFile(dataDir + "/records.jsonl", [
+    { kind: "agent", agent_id: "dash-line", enc_pub: "77".repeat(32), attestation: att, coarse: { region: "Fake Region Canary", isp_class: "us-fake-cable", residential: true }, at },
+    { kind: "agent", agent_id: "test-dash", enc_pub: "88".repeat(32), attestation: att, coarse: { region: "Fake Region Canary", isp_class: "us-fake-fiber", residential: true }, at },
+    { kind: "bounty", id: "bd1", agent_id: "dash-line", buyer_key: "t", at },
+    { kind: "decision", bounty_id: "bd1", decision: "accept", reason: "ok", at },
+    { kind: "result", bounty_id: "bd1", agent_id: "dash-line", result: { bounty_id: "bd1", items: [] }, attestation: att, at },
+    { kind: "bounty", id: "bd2", agent_id: "test-dash", buyer_key: "t", at },
+    { kind: "result", bounty_id: "bd2", agent_id: "test-dash", result: { bounty_id: "bd2", items: [] }, attestation: att, at },
+    { kind: "lease", id: "ld1", agent_id: "dash-line", account: "cd".repeat(32), deposit: 5, at },
+    { kind: "lease_decision", lease_id: "ld1", decision: "accept", reason: "ok", price_per_gb: 400, term_end: at, at },
+    { kind: "lease", id: "ld2", agent_id: "dash-line", account: "cd".repeat(32), deposit: 5, at },
+    { kind: "lease_decision", lease_id: "ld2", decision: "accept", reason: "ok", price_per_gb: 400, term_end: at, at },
+  ].map((r) => JSON.stringify(r) + "\n").join(""));
+  // A row 8 days old: the 7-day cap retires it on the next sample.
+  await Deno.writeTextFile(dataDir + "/" + HISTORY_FILE, JSON.stringify({ t: new Date(Date.now() - 8 * 86400e3).toISOString(), ready: 9, busy: 9, bounties_done: 9, leases: 9 }) + "\n");
+  const fleet = [{ publisher: "0xdash1", hardware: { chip: "M4" }, online: true, updated_at: 1, config: { guest: { vcpus: 2, mem_mib: 8192 } },
+    slots: [{ slot_id: 0, state: "ready", attestation: { attestation: { status: "verified" } } }, { slot_id: 1, state: "busy" }] },
+    { publisher: "0xdash2", hardware: { chip: "M3" }, online: false, updated_at: 1, config: { guest: { vcpus: 2, mem_mib: 8192 } },
+      slots: [{ slot_id: 0, state: "ready", attestation: { attestation: { status: "verified" } } }] }];
+  const real = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(Response.json(fleet))) as typeof fetch;
+  try {
+    // once a minute, not per call: the second sample writes nothing
+    assertEquals([await sampleHistory({ dataDir }), await sampleHistory({ dataDir })], [true, false]);
+    const rows = await (await handler(new Request("http://x/api/stats/history"), { dataDir })).json();
+    assertEquals(rows.length, 1);
+    assertEquals(Object.keys(rows[0]), ["t", "ready", "busy", "bounties_done", "leases"]);
+    // ready: the online Mac's verified ready slot only; busy: the one busy slot; bounties_done: the real line's finished job
+    // only (test-dash's excluded); leases: both accepted leases are active.
+    assertEquals([rows[0].ready, rows[0].busy, rows[0].bounties_done, rows[0].leases], [1, 1, 1, 2]);
+    assertEquals(JSON.stringify(rows).includes("Fake Region Canary"), false);
+    const file = (await Deno.readTextFile(dataDir + "/" + HISTORY_FILE)).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assertEquals([file.length, file[0].t], [1, rows[0].t]);  // the 8-day-old row retired
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+Deno.test("broker-network: the broker's /relay-broker/network is proxied same-origin; a failure is a 502 naming it", async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = ((url: string) => { assertEquals(String(url), BROKER_NETWORK); return Promise.resolve(Response.json({ publishers: 3, slots: 4, ready: 2, busy: 1 })); }) as typeof fetch;
+  try {
+    const r = await handler(new Request("http://x/api/broker-network"), { dataDir: await Deno.makeTempDir() });
+    assertEquals([r.status, await r.json()], [200, { publishers: 3, slots: 4, ready: 2, busy: 1 }]);
+    globalThis.fetch = (() => Promise.resolve(new Response("nope", { status: 503 }))) as typeof fetch;
+    const bad = await handler(new Request("http://x/api/broker-network"), { dataDir: await Deno.makeTempDir() });
+    assertEquals([bad.status, (await bad.json()).error], [502, "broker /network failed (503): nope"]);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
 Deno.test("minion rows: kept only with the minion's signature over the exact JSON, never with an address, once per id", async () => {
   const dataDir = await Deno.makeTempDir(), keys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]) as CryptoKeyPair;
   const hexOf = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -423,20 +479,20 @@ const chainStub = (head: number, logs: Rec[], seen: string[], state: Record<stri
 configure({ chainCacheMs: 0 });
 
 Deno.test("status: escrow token balance via eth_call; Claimed events indexed forward from layover-chain in 200-block windows, at most INDEX_MAX behind the head, skipped blocks counted", async () => {
-  const real = globalThis.fetch, token = "0x036cbd53842c5426634e7929541ec2318f3dcf7e", seen: string[] = [], dataDir = await Deno.makeTempDir();
+  const real = globalThis.fetch, usdc = "0x036cbd53842c5426634e7929541ec2318f3dcf7e", seen: string[] = [], dataDir = await Deno.makeTempDir();
   let head = 1_000_000;
   const logs = [claimLog(head - 5, 0x51, 0x52, 0x53, 1500000, 2920), claimLog(head - 1500, 0x51, 0x52, 0x53, 1000000, 2919), claimLog(head - 2500, 0x51, 0x52, 0x53, 1, 1)];
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     if (String(url).startsWith(CHAIN)) return chainStub(head, logs, seen)(new URL(url));
     const { params } = JSON.parse(init!.body as string);
     assertEquals(url, ESCROW.rpc);
-    const result = params[0].data === "0xfc0c546a" ? "0x" + w(BigInt(token)) : params[0].data === "0x313ce567" ? "0x" + w(6) : "0x" + w(100000000);
+    const result = params[0].data === "0xfc0c546a" ? "0x" + w(BigInt(usdc)) : params[0].data === "0x313ce567" ? "0x" + w(6) : "0x" + w(100000000);
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
   }) as typeof fetch;
   const get = async () => await (await handler(new Request("http://x/api/status/escrow"), { dataDir })).json();
   try {
     const e = await get();
-    assertEquals([e.token, e.balance, e.decimals, e.chain], [token, "100000000", 6, CHAIN]);
+    assertEquals([e.token, e.balance, e.decimals, e.chain], [usdc, "100000000", 6, CHAIN]);
     assertEquals(e.claim_index, { since: head - INDEX_MAX + 1, scanned_to: head, missed_blocks: 0 });
     assertEquals(e.last_claimed, { escrow: "escrow", block: head - 5, tx: "0x" + w(head - 5), user: addr(0x51), operator: addr(0x52), terms_hash: "0x" + w(0x53), cumulative_owed: "1500000", period: "2920" });
     assertEquals(seen.filter((x) => x.includes("/logs")).length, 2 * INDEX_MAX / LOG_SPAN);  // both escrows
@@ -501,7 +557,7 @@ Deno.test("market: per line health, appraisal, lease prices and fetch jobs; per 
     assertEquals(res.status, 200);
     const polled = m.lines[0].polled_at;
     if (!(Date.parse(m.at) - Date.parse(polled) < 5000)) throw new Error(`polled_at ${polled} is not the guest's poll just before ${m.at}`);
-    assertEquals(m.lines, [{ agent_id: "line-a", region: "us-ny", isp_class: "cable", residential: true, verified: true,
+    assertEquals(m.lines, [{ agent_id: "line-a", region: "Country unavailable", isp_class: "cable", residential: true, verified: true,
       appraisal: { at, pass: true, guest_version: "1773f002", cgnat: false, bandwidth_mbps: 80 },
       leases: { accepted: 1, ended: 0, charged_cents: 0, last: { at, price_per_gb: 400, price_per_hour: null } },
       fetch_jobs: { done: 1, pages: 2, served: 1, last_at: at },
@@ -604,7 +660,30 @@ Deno.test("static: roadmap.json, status.html and the usage dashboard are served 
   const dash = await get("/dashboard.html");
   assertEquals([dash.status, dash.headers.get("content-type")], [200, "text/html; charset=utf-8"]);
   assertEquals(status.includes('href="dashboard.html"'), true);
-  assertEquals((await (await get("/common.js")).text()).includes('["dashboard.html", "Usage"]'), true);
+  assertEquals((await (await get("/common.js")).text()).includes('["dashboard.html", "Dashboard"]'), true);
+});
+
+Deno.test("static: the public dashboard is served by the allowlist, is self-contained and shows no host-declared region", async () => {
+  const dataDir = await Deno.makeTempDir(), get = (p: string) => handler(new Request("http://x" + p), { dataDir });
+  const dash = await (await get("/dashboard.html")).text();
+  // It reads the site's own API and the broker's network read proxied same-origin, and refreshes every 30 s.
+  assertEquals([dash.includes("api/stats"), dash.includes("api/broker-network"), dash.includes("api/stats/history"), dash.includes("setInterval(load, 30000)")], [true, true, true, true]);
+  // Keep the live usage/supply views alongside the new capacity and minute history views.
+  for (const id of ["supply", "lines", "jobs", "leases", "stays", "settle", "overtime", "capacity", "spark", "history", "summary"]) {
+    assertEquals(dash.includes(`id="${id}"`), true, `missing dashboard view: ${id}`);
+  }
+  for (const source of ["api/probe-scheduler", "api/minion/rows", "api/market", "layover-accounts/api/info", "layover-chain/read"]) {
+    assertEquals(dash.includes(source), true, `missing original source: ${source}`);
+  }
+  // The registration's self-reported region is never displayed; the one region read is the appraisal's (the site's probe), labelled measured.
+  assertEquals(dash.split("coarse.region").length - 1, 1);
+  assertEquals(dash.includes("p.coarse.region"), true);
+  assertEquals([dash.includes("measured"), dash.includes("host-declared")], [true, true]);
+  assertEquals(/<script[^>]+src=/.test(dash), false);  // no external scripts
+  // The static allowlist serves the four site pages, shared assets and the kit map: everything else is a 404.
+  for (const p of ["/server.ts", "/admission-config.json", "/stats-history.jsonl", "/kit/couch/SKILL2.md", "/%2e%2e/server.ts", "/dashboard.html/x"]) {
+    assertEquals((await get(p)).status, 404, p);
+  }
 });
 
 Deno.test("references: host references the souk replied to the doorman, latest per deal, filtered by subject", async () => {
@@ -619,7 +698,8 @@ Deno.test("references: host references the souk replied to the doorman, latest p
   }) as typeof fetch;
   const get = (q: string, e: Record<string, string> = env) => handler(new Request("http://x/api/references" + q), { dataDir, env: e });
   try {
-    await assertRejects(() => get("", {}), Error, "SOUK_DOORMAN_CREDENTIAL");
+    const unconfigured = await get("", {});
+    assertEquals([unconfigured.status, (await unconfigured.json()).error], [502, "references unavailable: SOUK_DOORMAN_CREDENTIAL is not set in this deploy"]);
     const unsubscribed = await get("");
     assertEquals([unsubscribed.status, (await unsubscribed.json()).error.includes('send it kind "references"')], [502, true]);
     inbox = [{ kind: "Message", payload: { text: "{}" } }, out("references subscribed"), ref("thread-2", "resip-mini-1", "fast line"),
@@ -750,4 +830,40 @@ Deno.test({
       assertEquals(r.status >= 400 && r.status < 500, true, `${p} answered ${r.status}`);
     }
   },
+});
+
+Deno.test("static: front door, retired redirects, shared navigation and explicit allowlist", async () => {
+  const dataDir = await Deno.makeTempDir();
+  try {
+    const get = (p: string) => handler(new Request("http://x" + p), { dataDir });
+    const front = await (await get("/")).text();
+    assertEquals(front, await (await get("/layover.html")).text());
+    assertEquals(front.includes("Airbnb for your agents"), true);
+    for (const [old, dest] of Object.entries({ "index.html": "layover.html", "deals.html": "dashboard.html#deals-tools", "supplier.html": "provider.html", "public.html": "dashboard.html", "leases.html": "dashboard.html#lease-statements" })) {
+      const r = await get("/" + old);
+      assertEquals([r.status, r.headers.get("location")], [302, dest]);
+    }
+    assertEquals((await get("/supplier.html?agent_id=line-1")).headers.get("location"), "provider.html?agent_id=line-1");
+    for (const page of ["layover", "provider", "dashboard", "status"]) {
+      const r = await get("/" + page + ".html"), html = await r.text();
+      assertEquals(r.status, 200);
+      assertEquals(html.includes('<nav></nav>'), true);
+      assertEquals(html.includes('href="style.css"'), true);
+      assertEquals(/<title>[^<]*Layover[^<]*<\/title>/.test(html), true);
+    }
+    for (const path of ["/unknown.html", "/secret.json", "/index.js", "/style.css/extra"]) assertEquals((await get(path)).status, 404);
+    const common = await (await get("/common.js")).text();
+    assertEquals(common.includes('["layover.html", "Layover"], ["provider.html", "Lines"], ["dashboard.html", "Dashboard"], ["status.html", "Status"], ["https://github.com/souk-co/layover", "GitHub"]'), true);
+    const lines = await (await get("/provider.html")).text();
+    assertEquals(lines.includes('id="signin"'), true);
+    assertEquals(lines.includes('id="owned"'), true);
+    const dashboard = await (await get("/dashboard.html")).text();
+    for (const id of ["deals-tools", "index-tools", "lease-statements", "account-secret", "account-keys"]) assertEquals(dashboard.includes(`id="${id}"`), true);
+  } finally { await Deno.remove(dataDir, { recursive: true }); }
+});
+
+Deno.test("static: public text hides addresses and emails while preserving commitments", async () => {
+  const { publicText } = await import("./static/common.js");
+  assertEquals(publicText("Contact owner@example.org at 192.0.2.3 or 2001:db8::1"), "Contact [email removed] at [address removed] or [address removed]");
+  assertEquals(publicText("US · " + "a".repeat(64)), "US · " + "a".repeat(64));
 });

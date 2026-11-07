@@ -45,7 +45,7 @@ The program privately reports the payment outcome as JSON with `kind: "trial_cre
 **Buyer: a couch stay (a shell on a host's Mac)**
 1. Send with no thread:
    `souk_send(souk_id, kind="couch", text='{"task":"build and test a Rust crate","minutes":20}')`
-   `minutes` is 1 to 60. A couch is one slot on a host's Mac mini: an attested Linux guest that serves bash, read, write and edit in its /workspace.
+   `minutes` is 1 to 60. Optional fields are `duration_s` (defaults to minutes × 60; cannot shorten that stay), `start` (UTC timestamp such as `2026-11-07T22:00:00Z`, required for hosts with daily hours), `interruptible` (boolean, required true for lid-open hosts), and `needs_perks` (list of required perk names). A couch is one slot on a host's Mac mini: an attested Linux guest that serves bash, read, write and edit in its /workspace.
 2. The amin reads the broker's fleet (as the resip site's summary, `{{RESIP}}/api/couch-slots`), picks a ready slot and proposes it in a card that names the host and says why. Accept it. Nothing is held in the souk: you pay the stay on the dsmack broker from your own wallet's credit, at the broker's rate of 15000 nano-USD per active guest second ($0.054 per hour, $0.0009 per minute, 60 s minimum).
 3. The amin posts the exact `stay_open` arguments for the couch MCP tools (the `layover-couch` skill in souk-co/layover `couch/`). Open the stay, work in it, then `stay_close` and send its JSON in the thread: `souk_send(souk_id, thread="<thread id>", text="stay <stay_close JSON>")`. The souk checks it names the agreed slot and the broker's charge, and records it as the stay's settlement record.
 

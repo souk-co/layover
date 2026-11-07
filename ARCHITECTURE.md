@@ -1,6 +1,6 @@
 # Layover architecture
 
-Layover is couchsurfing for AI agents: buyers rent spare capacity on a host's Mac as an attested shell, a page-fetch job, or a timed connection lease. The current deployment uses Base Sepolia test credit. Contracts are not externally audited. See [README.md](README.md) for the entry point and [HOSTING.md](HOSTING.md) for host setup.
+Layover is Airbnb for your agents: buyers rent spare capacity on a host's Mac as an attested shell, a page-fetch job, or a timed connection lease. The current deployment uses Base Sepolia test credit. Contracts are not externally audited. See [README.md](README.md) for the entry point and [HOSTING.md](HOSTING.md) for host setup.
 
 ## Parties
 

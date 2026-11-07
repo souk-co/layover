@@ -42,7 +42,7 @@ check)
   settings
   [ "$(uname -m)" = arm64 ] || { echo "Apple silicon only" >&2; exit 1; }
   [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] || { echo "macOS 27 or later" >&2; exit 1; }
-  need python3 "Xcode command line tools"; need uv "brew install uv (macOS python3 is 3.9; souk.py needs 3.10+)"; need gh "brew install gh, then gh auth login (souk-co/layover is private)"
+  need python3 "Xcode command line tools"; need uv "brew install uv (macOS python3 is 3.9; souk.py needs 3.10+)"; need gh "brew install gh, then gh auth login"
   need cast "curl -L https://foundry.paradigm.xyz | bash && foundryup"
   OPENSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl; [ -x "$OPENSSL" ] || { echo "brew install openssl@3" >&2; exit 1; }
   cast wallet address --account "$OPERATOR_ACCOUNT" | grep -qi "$OPERATOR" || { echo "keystore $OPERATOR_ACCOUNT is not $OPERATOR" >&2; exit 1; }; echo "fund $OPERATOR with ~0.02 Base Sepolia ETH: chain-enroll uses ~14.4M gas in each of two registries"

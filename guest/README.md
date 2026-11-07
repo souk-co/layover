@@ -1,4 +1,4 @@
-# resip guest
+# Layover line guest
 
 A Linux guest on the mini (DsmackRunner, hvf-v3) in two services, `agent` and `gateway`, that registers an attested X25519 key and proxy CA with the
 staging site, polls its sealed bounties and lease requests, has a delegate decide each one, fetches accepted
@@ -15,7 +15,7 @@ TLS-terminating proxy (Mode 2), and posts results and end-of-lease statements si
 | `lease.mjs` | the proxy CA, leases, the relay streams and the TLS-terminating proxy (HTTP and WebSocket), end-of-lease statements |
 | `state.mjs` | sealed state across runs: the custody release and compare-and-swap commits |
 | `instructions.txt` | route-neutral default instructions (the off-Mac tests use it); each instance passes its own at launch |
-| `instances/` | the mini's instances: `launch.env` (agent id, daily bytes, route, payout and escrow addresses) and `instructions.txt` each |
+| `instances/` (local, not committed) | each host's instances: `launch.env` (agent id, daily bytes, route, payout and escrow addresses) and `instructions.txt` each |
 | `inputs.py` | writes the private-input disk that carries the launch inputs (below) to the guest |
 | `Dockerfile` | `node:24.22.1-bookworm-slim` + `ethers`, `@nearai/inference-sdk`, `@peculiar/x509`, the dsmack `egress-policy` gateway (PR #84 on PR #79, `f5d3b9a5`); one image for both services |
 | `pack.py` | builds the arm64 image, the two-service compose manifest and `workload.img` on zed |
@@ -35,8 +35,6 @@ TLS-terminating proxy (Mode 2), and posts results and end-of-lease statements si
 | `test/account.mjs` | a `use:"account"` lease: cookies, User-Agent, the session cap within and across runs, signup refusal, a WebSocket echo |
 
 ## Byte formats
-
-These match `PLAN.md` on branch `web`.
 
 - Hex everywhere, lowercase. `enc_pub` is the raw 32-byte X25519 key.
 - Registration `report_data` = `sha256(enc_pub) || sha256(CA certificate DER)`. One attestation binds the bounty
@@ -187,7 +185,7 @@ held by custody (`web/custody.ts` on branch `web`, its own webhost project `resi
 
 1. At boot the guest reads custody's head, generates an ephemeral X25519 key and calls `/v1/Attest` with
    `report_data = sha256(canonical({kind:"resip-custody-release/1", agent_id, head, eph_pub})) || 0^32`.
-2. Custody verifies the attestation (App Attest, apple-root on staging), checks that the manifest and the OS image are
+2. Custody verifies the attestation (App Attest, on-chain enrollment), checks that the manifest and the OS image are
    in its policy (`web/custody.json`, one list for every agent id), that the runner key is the one this agent id's first
    release bound, and that `head` is its current head, and returns the state key
    sealed to `eph_pub` (HKDF info `"resip-custody/1 release"`) and the blob. A request for any other head gets 409.
@@ -222,21 +220,12 @@ is not returned, logged or posted.
 The guest uses the private-agent staging broker's route, the same one the browser uses:
 `https://pod.dstack.soc1024.com/relay-broker-staging/inference/{credit,prepare,chat,usage}`. The wallet is created once
 and carried in the sealed state; its first `credit` call, made before its first model call, takes the broker's starter
-credit ($0.25) from a budget all starter wallets share ($5 a UTC day). Until 2026-11-04 every boot made a new wallet and
-claimed credit at boot, so a day of fast relaunches spent the whole budget and the guest then exited at boot with
-`STARTER_BUDGET_EXHAUSTED`. Now a broker refusal fails only the bounty or lease that needed the model, declined as
+credit ($0.25) from a budget all starter wallets share ($5 a UTC day). A broker refusal fails only the bounty or lease that needed the model, declined as
 `guest error: broker credit 402: ...`. `prepare` returns the broker-verified
 attestation of the NEAR AI Cloud model and its key. The request is encrypted to that key with
 `@nearai/inference-sdk`, and the reply is decrypted in the guest. The broker sees ciphertext only. The model is
 whatever the broker has configured; on 2026-11-03 that was `deepseek-ai/DeepSeek-V4.1-Flash-1017`. The guest
 checks the broker's `verification: "verified"` and the model name. It does not verify the NEAR quote itself.
-
-## Inference outage (2026-11-04, fixed)
-
-From early 2026-11-04 the broker's `prepare` returned `ATTESTATION_INVALID` because NEAR's gateway compose hash changed
-and the broker pinned the old one, so every delegate call failed and every bounty and lease was declined with
-"guest error". dsmack PR #80, deployed on `relay-broker-staging` the same day, fixed it; live delegate decisions work
-again. `test/local.mjs` still runs with a local stand-in model when `BROKER` is unset.
 
 ## Network
 
@@ -256,8 +245,7 @@ The guest runs on the dsmack PR #78 base (`8783a3be…`), which gives compose se
   Host proxies. A route that needs software on the Mac (a WireGuard VPN, Nym) runs there as an ordinary HTTP CONNECT proxy bound
   to `127.0.0.1` on one of 18888-18891, and the instance sets `UPSTREAM_PROXY=http://192.168.127.254:PORT`. HTTP CONNECT because the
   pinned gateway takes only an `http://IP:port` upstream. A new route is a new proxy on a spare port and a new instance, with no
-  rebuild, re-pin or workload approval. The ports are assigned on the mini as: 18888 Nym (`nym-line` in colima, tinyproxy),
-  18889 ProtonVPN US-NY#778 (wireproxy 1.1.3 on `~/.config/egress/wg.conf`, `~/projects/resip-guest/proton/`), 18890 and 18891 free.
+  rebuild, re-pin or workload approval.
 
   What the attestation covers here: the guest's code and policies, its sealing, and that the gateway service can reach the Mac only
   on those four ports. It does not cover the proxy: whatever listens on the port, and the route it takes, is the host's. A host can
@@ -296,10 +284,11 @@ validates the envelope against the manifest before compose starts; a missing req
 From the laptop, with this branch committed (`release.sh` refuses uncommitted changes under `guest/`):
 
 ```sh
-guest/release.sh WEB_DIR
+guest/release.sh WEB_DIR PREV
 ```
 
-WEB_DIR is a checkout of branch `web`'s `web/`. It first checks that the base on zed (`/data/amiller/resip-guest/base-8783a3be`,
+WEB_DIR is a checkout of branch `web`'s `web/`; PREV is the commit of the build currently on the mini. This is the team's
+deployment script and requires its existing zed and mini directories. It first checks that the base on zed (`/data/amiller/resip-guest/base-8783a3be`,
 the dsmack PR #78 image, os_image_hash `8783a3be…`) is the one in the mini's runner (`~/projects/resip-guest/runner/base`).
 It copies `HEAD:guest` to `/data/amiller/resip-guest/build-<commit>` on zed and runs `pack.py` there with the gateway
 from dsmack PR #84 (`f5d3b9a5`, branch `work/egress-content-encoding`, on PR #79) at `/data/amiller/resip-guest/dsmack-f5d3b9a5`, the
@@ -342,12 +331,10 @@ python3 test/inputs.py DSMACK_AD7C7C97_CHECKOUT STARTER_MANIFEST
 
 ## Attestation and what the site can check
 
-The guest runs under the private-agent staging runner's app and key with its own base: DsmackRunner CDHash `0c3d3c90…`,
-App Attest key `0x13dc6356…`, base `8783a3be…` (dsmack PR #78). That key is not enrolled in the on-chain registry: `checkAssertion` against
-`0x04f57D21…` says "App Attest key is not enrolled or has expired". The private-agent staging policy
-(`~/dsmack-staging/sandbox-policy.json` on the mini, `enrollmentMode: "apple-root"`) carries the key's Apple
-attestation object, and verifiers check it against the Apple root. The site has to do the same to get
-`ok: true`.
+The site verifies App Attest assertions against the on-chain key directory using Helios-verified reads.
+`web/verify.ts` requires the key to be enrolled and checks the assertion through `checkAssertion`;
+`web/custody.ts` uses that verifier before releasing state. See [HOSTING.md](../HOSTING.md)
+for enrollment in both the key directory and GuestEscrow's verifier.
 
 ## Known gaps
 
@@ -369,5 +356,5 @@ attestation object, and verifiers check it against the Apple root. The site has 
   meanwhile, and it ends with the run.
 - The guest's calls to the site leave direct from the Mac (through the control gateway), so with an `UPSTREAM_PROXY` the pod's network layer
   sees the Mac's address, not the exit's. The site's code never reads or stores it.
-- Payment is a staging ledger on the site. The guest trusts the site's `paid_bytes`; a lying site can only
+- For legacy site-credit leases, payment is a staging ledger on the site. The guest trusts the site's `paid_bytes`; a lying site can only
   shorten or lengthen a lease, not break exclusivity, which the guest enforces itself.

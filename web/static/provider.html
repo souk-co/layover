@@ -2,17 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>resip provider</title>
+<title>Lines · Layover</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main>
 <nav></nav>
 <div>
-<div class="lbl">Provider console</div>
-<h1>Your lines</h1>
-<div class="note">One row per line (registered agent). The site has no owner login: this view is public per line, the same records the supplier view reads. Test agents (id prefix "test-") are left out.</div>
+<div class="lbl">Host console</div>
+<h1>Lines</h1>
+<div class="note">One row per line (registered agent). Public regions for home lines show country only, with state if the owner opts in. Sign in to see the lines you registered or operate. Test agents (id prefix "test-") are left out.</div>
 </div>
+<section class="card">
+<div id="identity">Not signed in</div>
+<form id="signin"><label>Email <input id="email" type="email" autocomplete="email" required></label> <button>Send sign-in code</button></form>
+<form id="verify" hidden><label>Email code <input id="code" autocomplete="one-time-code" required></label> <button>Sign in</button></form>
+<button id="signout" hidden>Sign out</button><div id="auth-error" class="err" role="status"></div>
+</section>
+<section id="owned" class="card" hidden><h2>Your lines</h2><div id="owned-lines"></div></section>
 <div id="err" class="err"></div>
 <section class="card">
 <div class="scroll"><table><thead><tr><th>Line</th><th>Status</th><th>Region</th><th>ISP class</th><th>Exclusive tier</th><th>Guest version</th><th>Earned today</th></tr></thead><tbody id="lines"></tbody></table></div>
@@ -27,8 +34,51 @@
 <div id="detail"></div>
 </main>
 <script type="module">
-import { api, esc, short, nav, fail, leaseCells, credits, probes } from "./common.js";
-nav("Provider");
+import { api, publicEsc as esc, publicText, short, nav, fail, leaseCells, credits, probes } from "./common.js";
+nav("Lines");
+// The session lives in memory only. No email, session, or challenge goes in a URL.
+let session = null, challenge = null;
+const authError = (e) => { document.querySelector("#auth-error").textContent = e.message; };
+async function account(path, body) {
+  const url = "api/console/" + path;
+  let r;
+  try { r = await fetch(url, { method: body ? "POST" : "GET", headers: { "content-type": "application/json", ...(session ? { authorization: "Bearer " + session } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) }); }
+  catch (e) { throw new Error(`${url}: network request failed (${e.message})`); }
+  const text = await r.text();
+  let j; try { j = JSON.parse(text); } catch { throw new Error(`${url}: HTTP ${r.status}, expected JSON`); }
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}: ${j.error ?? "request failed"}`);
+  return j;
+}
+async function owned() {
+  const data = await account("lines");
+  document.querySelector("#identity").textContent = `Signed in as ${data.email} · wallet ${data.address}`;
+  document.querySelector("#owned").hidden = false;
+  document.querySelector("#owned-lines").innerHTML = data.lines.map(a => `<div class="card"><h3>${esc(a.agent_id)}</h3>
+    <details><summary>Registered instructions</summary><pre>${esc(a.instructions ?? "No instructions registered.")}</pre></details>
+    <div>Private registered region: ${esc(a.coarse.region)}</div>
+    <div>Private measured region: ${esc(a.appraisals.at(-1)?.coarse.region ?? "No appraisal yet")}</div>
+    <form class="privacy" data-agent="${esc(a.agent_id)}"><label><input name="state" type="checkbox" ${a.privacy.show_state ? "checked" : ""}> Share state publicly (never city for a home line)</label>
+    <label>Connection <select name="kind">${[["home", "Own home connection"], ["rented_exit", "Rented exit (public city)"], ["vpn", "VPN (public city)"]].map(([v, t]) => `<option value="${v}" ${a.privacy.connection_kind === v ? "selected" : ""}>${t}</option>`).join("")}</select></label> <button>Save privacy</button></form></div>`).join("") || "No lines registered or operated by this account.";
+  for (const form of document.querySelectorAll(".privacy")) form.onsubmit = async e => {
+    e.preventDefault();
+    try { await account("privacy", { agent_id: form.dataset.agent, show_state: form.elements.state.checked, connection_kind: form.elements.kind.value }); document.querySelector("#auth-error").textContent = "Privacy saved."; last = ""; await load(); } catch (e) { authError(e); }
+  };
+}
+document.querySelector("#signin").onsubmit = async e => {
+  e.preventDefault();
+  try { const out = await account("login", { email: document.querySelector("#email").value }); challenge = out.challenge_id; document.querySelector("#verify").hidden = false; document.querySelector("#auth-error").textContent = "Code sent. Enter the code from your email."; } catch (e) { authError(e); }
+};
+document.querySelector("#verify").onsubmit = async e => {
+  e.preventDefault();
+  try { const out = await account("verify", { challenge_id: challenge, code: document.querySelector("#code").value }); session = out.session; await owned(); document.querySelector("#signin").hidden = true; document.querySelector("#verify").hidden = true; document.querySelector("#signout").hidden = false; document.querySelector("#code").value = ""; document.querySelector("#auth-error").textContent = ""; } catch (e) { authError(e); }
+};
+document.querySelector("#signout").onclick = () => {
+  session = challenge = null;
+  document.querySelector("#identity").textContent = "Not signed in";
+  document.querySelector("#owned").hidden = true; document.querySelector("#owned-lines").replaceChildren();
+  document.querySelector("#signin").hidden = false; document.querySelector("#verify").hidden = true; document.querySelector("#signout").hidden = true;
+  document.querySelector("#email").value = ""; document.querySelector("#auth-error").textContent = "";
+};
 const DAY = 86400e3;
 let last = "";
 
@@ -102,13 +152,16 @@ function minion(rows) {
 }
 
 async function load() {
-  const [all, refs] = await Promise.all([api("agents"), api("references")]);
+  const errors = [];
+  const optional = (path, fallback) => api(path).catch(e => { errors.push(e.message); return fallback; });
+  const [all, refs] = await Promise.all([api("agents"), optional("references", [])]);
   const agents = all.filter((a) => !a.agent_id.startsWith("test-"));
   const lines = await Promise.all(agents.map(async (a) => {
     const q = encodeURIComponent(a.agent_id);
-    const [aps, rqs, earn, ls, ps] = await Promise.all([api(`agents/${q}/appraisals`), api("appraisal-requests?agent_id=" + q), api(`agents/${q}/earnings`), api("leases?agent_id=" + q), probes(a.agent_id)]);
-    return { a, aps: aps.sort((x, y) => y.at.localeCompare(x.at)), rqs: rqs.reverse(), earn, ls: ls.reverse(), ps, rs: refs.filter((r) => r.subject === a.agent_id) };
+    const [aps, rqs, earn, ls, ps, decisions, custody] = await Promise.all([optional(`agents/${q}/appraisals`, []), optional("appraisal-requests?agent_id=" + q, []), optional(`agents/${q}/earnings`, { days: [] }), optional("leases?agent_id=" + q, []), probes(a.agent_id).catch(e => { errors.push(e.message); return null; }), optional("bounties?agent_id=" + q, []), optional("custody/" + q, null)]);
+    return { decisions, custody, a, aps: aps.sort((x, y) => y.at.localeCompare(x.at)), rqs: rqs.reverse(), earn, ls: ls.reverse(), ps, rs: refs.filter((r) => r.subject === a.agent_id) };
   }));
+  document.querySelector("#err").textContent = errors.length ? "Some records are unavailable: " + publicText(errors.join("; ")) : "";
   const key = JSON.stringify(lines);
   if (key === last) return;
   last = key;
@@ -117,15 +170,19 @@ async function load() {
     <td><span class="${a.verification.ok ? "ok" : "bad"}">${a.verification.ok ? "attested" : "not verified"}</span><div class="note">registered ${ago(a.at)} min ago</div></td>
     <td>${esc(a.coarse.region)}</td><td>${esc(a.coarse.isp_class)}</td><td>${tier(aps[0])}</td><td class="mono">${esc(aps[0]?.guest_version ?? "")}</td>
     <td>${credits(earn.days.find((d) => d.day === today)?.cents ?? 0)}</td></tr>`).join("") : `<tr><td colspan="7" class="note">No lines registered yet.</td></tr>`;
-  document.querySelector("#detail").innerHTML = lines.map(({ a, aps, rqs, earn, ls, ps, rs }) => `<section class="card" id="${esc(a.agent_id)}" style="margin-bottom:24px">
+  document.querySelector("#detail").innerHTML = lines.map(({ a, aps, rqs, earn, ls, ps, rs, decisions, custody }) => `<section class="card" id="${esc(a.agent_id)}" style="margin-bottom:24px">
     <h2>${esc(a.agent_id)}</h2>
-    <div><div class="lbl">Earnings, last 7 UTC days</div><div class="note">From the site's lease ledger: what holders were charged on this line's accepted leases, accruing at the agreed price per hour (staging credit, not money). Souk settlement (credits held and released by the amin on souk-dev) is not readable here: souk-dev answers 401 without a member login.</div></div>
+    <div><div class="lbl">Earnings, last 7 UTC days</div><div class="note">From the site's lease ledger: what holders were charged on this line's accepted leases, charged according to each lease’s agreed terms (staging credit, not money). Souk settlement (credits held and released by the amin on souk-dev) is not readable here: souk-dev answers 401 without a member login.</div></div>
     ${chart(earn.days)}
+    <details><summary>Delegate decisions and guest continuity</summary>
+    <div class="note">Guest keys and leases carry across restarts in sealed state.</div>
+    <p>${custody?.head ? `State sequence ${esc(custody.seq)} · head <span class="mono">${short(custody.head)}</span> · ${custody.events.filter(e => e.kind === "refused").length} refused releases in recent custody events` : "No state committed yet."}</p>
+    <div class="scroll"><table><thead><tr><th>When</th><th>Job</th><th>Decision</th><th>Reason</th><th>Quote</th><th>Forecasts / policy</th><th>Result</th></tr></thead><tbody>${decisions.filter(b => b.decision).reverse().map(b => `<tr><td>${esc(b.decision.at)}</td><td class="mono">${short(b.id)}</td><td>${esc(b.decision.decision)}</td><td>${esc(b.decision.reason)}</td><td>${credits(b.decision.quote ?? 0)}</td><td><pre>${esc(JSON.stringify(b.decision.forecasts))}</pre>${short(b.decision.policy_sha256)}</td><td>${b.result ? `${b.result.result.items.length} items · ${b.result.verification.ok ? "verified" : "not verified"}` : esc(b.status)}</td></tr>`).join("") || '<tr><td colspan="7">No decisions yet.</td></tr>'}</tbody></table></div></details>
     <div><div class="lbl">Data used today</div><div class="note">Not shown: the guest's daily cap (<span class="mono">DAILY_BYTES</span>, set in the measured manifest) and its use today (kept in the guest's sealed state) are not reported to the site.</div></div>
     <div><div class="lbl">References</div><div class="note">One line each buyer left about this line after a settled deal, recorded by the IP souk's program (only the deal's two sides, once each). Hosts' references about buyers stay in the souk.</div></div>${references(rs)}
     <div><div class="lbl">QA probes</div></div>${qa(ps)}
     <div><div class="lbl">Appraisals</div></div>${appraisals(rqs, aps)}
-    <div><div class="lbl">Deals</div><div class="note">Coverage: each 300 s of the window with a vantage check that saw the same IP and ASN. The amin pays the line for covered periods only. Per-deal prices and amounts paid stay between the holder and the guest.</div></div>
+    <div><div class="lbl">Deals</div><div class="note">Coverage: each 300 s of the window with a vantage check that saw the same IP and ASN. The statement reports measured coverage. Per-deal prices and amounts paid stay between the holder and the guest.</div></div>
     <div class="scroll"><table><thead><tr><th>Requested</th><th>Lease</th><th>Status</th><th>Window</th><th>Coverage</th><th>Vantage</th><th>Mode and statement</th></tr></thead><tbody>${ls.length ? ls.map((l) =>
       `<tr><td class="mono">${esc(l.at)}</td><td class="mono">${short(l.id)}</td><td class="${l.status === "active" ? "ok" : l.status === "declined" ? "bad" : ""}">${esc(l.status)}</td>${leaseCells(l)}</tr>`).join("")
       : `<tr><td colspan="7" class="note">No deals yet.</td></tr>`}</tbody></table></div></section>`).join("");

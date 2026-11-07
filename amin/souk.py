@@ -180,7 +180,12 @@ def handle(e, s):
     if wf and t.flag("agreed") and t.flag("accepted") and not t.flag("settled") and e.args["url"] == lease_url(t):
         return escrow_started(listing(e.result) if e.state == "done" else None, t)
     if wf and e.state == "done" and e.args["url"] == FLEET_URL:
-        return [(t.set_flag if fleet(e.result) else t.clear_flag)("fresh:fleet")]
+        slots = fleet(e.result)
+        mark = (t.set_flag if slots else t.clear_flag)("fresh:fleet")
+        if t.data["kind"] != "couch" or not slots:
+            return [mark]
+        # Like lease_lines (#149), a match run sees only its thread: store the rows that fit this stay (#153).
+        return [mark, store(dict(kind="couch_slots", text=json.dumps(dict(kind="couch_slots", slots=[r for r in slots if fits(r, t.data["request"])]))))]
     if wf and e.state == "done":
         d = doc(e.result)
         if k == "line" and t.flag("enrolled"):
@@ -205,8 +210,10 @@ def handle(e, s):
             if e.value == "accept" and not q["expired"]:
                 return [t.set_flag("accepted"), post(t, stay_notice(t))]
             return [t.set_flag("closed"), post(t, "The terms were declined or expired.")]
-        if e.value == "accept" and not q["expired"] and conflict(t, s):
-            return [t.set_flag("closed"), post(t, conflict(t, s))]
+        if e.value == "accept" and not q["expired"]:
+            reason = conflict(t, s)
+            if reason:
+                return [t.set_flag("closed"), post(t, reason)]
         if e.value == "accept" and not q["expired"] and "escrow" in t.record("terms"):
             return [t.set_flag("agreed"), post(t, escrow_notice(t))]
         if e.value == "accept" and not q["expired"]:
@@ -461,7 +468,7 @@ def fetch_request(d):
     return dict(domains=domain_list(d), pages=d["pages"], max_price=nat(d["max_price"]), vantage=d.get("vantage"), region=str(d.get("region", "")).lower())
 
 
-def fits(q, c):
+def coarse_fits(q, c):
     return q["vantage"] in (None, ["vpn", "home"][c["residential"]]) and q["region"] in c["region"].lower()
 
 
@@ -475,7 +482,48 @@ def couch_request(d):
         raise ValueError("task must be a nonempty description of at most 500 characters")
     if not 1 <= nat(d["minutes"]) <= COUCH_MAX_MINUTES:
         raise ValueError(f"minutes must be 1 to {COUCH_MAX_MINUTES}")
-    return dict(task=task, minutes=d["minutes"])
+    perks = d.get("needs_perks") or []
+    if not isinstance(perks, list) or not all(isinstance(x, str) and x.strip() for x in perks):
+        raise ValueError("needs_perks must be a list of perk names")
+    if d.get("start") is not None:
+        epoch(str(d["start"]))  # a start, if sent, is a UTC timestamp
+    if type(d.get("interruptible", False)) is not bool:
+        raise ValueError("interruptible must be true or false")
+    return dict(task=task, minutes=d["minutes"], duration_s=nat(d.get("duration_s", d["minutes"] * 60)), start=d.get("start"),
+                needs_perks=[x.strip() for x in perks], interruptible=d.get("interruptible", False))
+
+
+# Issue #153: a host level's card carries the fields that decide fit; the level's name never does.
+def fits(card, request):
+    availability = card.get("availability") or {}
+    stay = request.get("duration_s")
+    if stay is not None:  # the stay is at least the task's minutes, so a duration_s under minutes*60 cannot shrink the checks
+        stay = max(stay, request.get("minutes", 0) * 60)
+    if card.get("card_error"):
+        return False  # the site's marker for a card that failed to expand: a card that cannot be read is not a fitting row
+    if not availability and "max_stay_s" not in card and "perks" not in card:
+        return True  # a row without the card fields keeps today's behaviour
+    if "max_stay_s" in card and (stay is None or stay > card["max_stay_s"]):
+        return False
+    if availability.get("kind") == "hours" and not inside_window(availability.get("hours"), request.get("start"), stay):
+        return False
+    if availability.get("kind") == "lid_open" and (stay is None or request.get("interruptible") is not True):
+        return False
+    return set(request.get("needs_perks") or []) <= set(card.get("perks") or ())
+
+
+def inside_window(hours, start, duration):
+    # The site serves the pair as ["HH:MM", "HH:MM"] (PR #226); the issue also writes it "HH:MM-HH:MM".
+    pair = hours if isinstance(hours, list) else str(hours or "").split("-")
+    m = [re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", p) for p in pair] if len(pair) == 2 and all(isinstance(p, str) for p in pair) else []
+    if len(m) != 2 or None in m or start is None or duration is None:
+        return False
+    opens = int(m[0][1]) * 3600 + int(m[0][2]) * 60
+    length = (int(m[1][1]) * 3600 + int(m[1][2]) * 60 - opens) % 86400  # a window that wraps midnight stays open through it
+    past = epoch(start) % 86400
+    if re.search(r"\.\d*[1-9]\d*Z$", start):
+        past += 1  # integer stays: round fractional starts up so an end after close cannot fit
+    return any(o <= past and past + duration <= o + length for o in (opens, opens - 86400))
 
 
 def lease_request(d):
@@ -520,7 +568,7 @@ def listing_record(t, s):
     ups = lambda about, x: [r["up"] for r in references(s) if r["about"] == about and r["subject"] == x]
     rows = [dict(line=n, agent_id=v["agent_id"], appraisal_id=v["appraisal_id"], coarse=v["attested"]["coarse"], bandwidth_mbps=v["attested"]["bandwidth_mbps"],
                  owner_reported=v["owner_reported"], policy=v["policy"], exclusive_basis=v["exclusive_basis"], references=ups("host", v["agent_id"]))
-            for n, v in lines(s).items() if k == "lease" or set(FETCH_CATEGORIES) & set(v["policy"]["categories"]) and fits(req, v["attested"]["coarse"])]
+            for n, v in lines(s).items() if k == "lease" or set(FETCH_CATEGORIES) & set(v["policy"]["categories"]) and coarse_fits(req, v["attested"]["coarse"])]
     x = dict(price=fetch_price(req["pages"])) if k == "fetch" else dict(buyer=ups("guest", t.opener))
     text = json.dumps(dict(kind=k + "_lines", lines=rows, **x))
     key = "listed:" + keccak256(text)[:16]
@@ -543,7 +591,7 @@ def fetch_offer(t, s, d, at):
     else:
         live, ok, bad = {f[11:] for f in flags if f.startswith("fresh:live:")}, {d["id"]} if fresh(d, at) else (), {d["id"]}
     for k, v in lines(s).items():
-        if not set(FETCH_CATEGORIES) & set(v["policy"]["categories"]) or not fits(req, v["attested"]["coarse"]) or v["appraisal_id"] not in {*ok, *bad}:
+        if not set(FETCH_CATEGORIES) & set(v["policy"]["categories"]) or not coarse_fits(req, v["attested"]["coarse"]) or v["appraisal_id"] not in {*ok, *bad}:
             continue
         why = (f"its appraisal {v['appraisal_id']} fails the check (pass true, guest_version {APPRAISAL_PIN[:8]}, at most {MAX_APPRAISAL_AGE // 86400} days old)" if v["appraisal_id"] not in ok
                else f"its guest has not polled the site within {LIVE_SECONDS} s of /api/market's `at`" if v["agent_id"] not in live
@@ -1069,6 +1117,8 @@ def guard_couch_terms(a, t, req):
     slot = fleet_slot(t, a.get("publisher"), a.get("slot_id"))
     if not slot:
         return deny(f"Slot {a.get('slot_id')!r} of {a.get('publisher')!r} is not a ready, verified slot of an online Mac in this run's {FLEET_URL}.")
+    if not fits(slot, req):
+        return deny(f"Slot {a.get('slot_id')!r} of {a.get('publisher')!r} does not fit this stay: its level card fails the request's stay length, open window, interruptibility or perks.")
     minutes = a.get("minutes")
     if not isinstance(minutes, int) or not 1 <= minutes <= req["minutes"]:
         return deny(f"minutes must be an integer from 1 to the {req['minutes']} the guest asked for.")

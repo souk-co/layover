@@ -101,7 +101,7 @@ At a buyer's first sign-in the pot sends `STARTER` LAYC (5 LAYC) to the new wall
 lists the IP souk (`SOUK_ID`) among that person's souks (`/api/souk_list` with the token the sign-in just issued), and at
 most `STARTERS_PER_DAY` (200) a day. The souk signs in any address, so without the membership check anyone with a fresh
 email could draw starter credit; with it, starter credit follows the doorman's invitation and its signup limits. At the
-defaults the pot pays out at most 10,000 LAYC a day.
+defaults the pot pays out at most 1,000 LAYC a day.
 
 The pot is a funded wallet, not a mint. Its key is a deploy-time secret (`POT_KEY` in the manifest env, read from
 `POT_KEY_FILE` by `deploy.py`), and the pot pays its own transfer gas. Do not use the genesis wallet `0x1FBe…6c5b` as the
@@ -118,8 +118,7 @@ covers thousands of accepts. `GET /info` shows what is left.
 
 ## Deploy
 
-The first deploy is also the first live use of the webhost's `dstack_env` that we know of (`resip-staging` has none). If
-`/api/info` answers "ACCOUNTS_SEED (manifest dstack_env) is not set", the daemon did not derive it
+If `/api/info` answers "ACCOUNTS_SEED (manifest dstack_env) is not set", the daemon did not derive it
 (`proxy/runtimes.py::_resolve_dstack_env`). A pot or relayer that runs dry makes `/verify` or `/accept` fail with the chain's
 error; `/api/info` shows `pot_layc` and `relayer_eth_wei`.
 

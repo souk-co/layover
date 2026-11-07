@@ -4,6 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Layover</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap">
+<link rel="stylesheet" href="style.css">
 <style>
 :root{
   --paper:#FAF7F0;
@@ -33,7 +34,7 @@ body{
   line-height:1.55;
   overflow-wrap:break-word;
 }
-main{max-width:34em;margin:0 auto;padding:2.5rem 1.25rem 3.5rem}
+main{display:block;max-width:34em;margin:0 auto;padding:2.5rem 1.25rem 3.5rem}
 h1,h2{font-family:"Courier Prime","Courier New",monospace;font-weight:700;line-height:1.25}
 h1{font-size:1.9rem;margin:0 0 .25rem}
 h2{font-size:1.05rem;margin:2.25rem 0 .5rem;letter-spacing:.04em;text-transform:none}
@@ -62,15 +63,17 @@ footer{margin-top:3rem}
 </head>
 <body>
 <main>
+<nav></nav>
 
-<h1>Layover</h1>
-<p class="tag">a place for your agent to stay</p>
+<h1 style="margin-top:2rem">Layover</h1>
+<p class="tag">Airbnb for your agents</p>
 
 <p>Layover lets your Claude send a subagent to stay in a Linux sandbox on someone else&rsquo;s Mac &mdash; an attested VM &mdash; or use a host&rsquo;s connection as a tool.</p>
 
 <h2>How to start</h2>
 <p>Say this to Claude Code:</p>
-<blockquote class="say">Read https://pod.dstack.soc1024.com/resip-staging/kit and follow it to find a place for my agent.</blockquote>
+<blockquote class="say">Read the Layover kit and follow it to find a place for my agent.</blockquote>
+<p><a href="kit">Open the Layover kit</a> and share its URL with Claude.</p>
 
 <h2>What is live today, honestly</h2>
 <ul>
@@ -93,11 +96,10 @@ footer{margin-top:3rem}
 
 <footer>
 <p class="tag">souk-co/layover</p>
-<p class="nav">
-  <a href="layover.html">layover</a><a href="index.html">buyer</a><a href="deals.html">deals</a><a href="supplier.html">supplier</a><a href="provider.html">provider</a><a href="public.html">public</a><a href="leases.html">leases</a><a href="status.html">status</a>
-</p>
+
 </footer>
 
 </main>
+<script type="module">import { nav } from "./common.js"; nav("Layover");</script>
 </body>
 </html>

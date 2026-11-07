@@ -52,6 +52,16 @@ class ResipLeaseTest(unittest.TestCase):
     def setUp(self):
         self.server.requests.clear()
 
+    def test_account_stat_error_does_not_replace_existing_secret(self):
+        path = self.directory / "account.json"
+        original = path.read_bytes()
+        run = subprocess.run(["deno", "run", "-A", f"--deny-read={path}", "--no-check",
+            str(RESIP), "account", str(self.directory)], capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("Requires read access", run.stderr)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.server.requests, [])
+
     def resip(self, *flags):
         return subprocess.run(["deno", "run", "-A", "--no-check", str(RESIP), "lease", str(self.directory),
             "example.com", "price_check", "shared", "5", "10", "50", *flags], capture_output=True, text=True, timeout=120)

@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Layover usage and supply</title>
+<title>Dashboard · Layover</title>
 <link rel="stylesheet" href="style.css">
 <style>
-:root{--na:#8A9096;--chip:#ECEEEA}
-@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:#2A2E32}}
+:root{--na:#8A9096;--chip:var(--line2)}
+@media (prefers-color-scheme:dark){:root{--na:#6E757C;--chip:var(--line2)}}
 main{gap:16px}
 main>h2{margin:8px 0 0;font-size:20px}
-.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:16px}
 .card{padding:18px;gap:10px}
 .card h2{display:flex;align-items:center;gap:10px;font-size:17px}
 .card h3{margin:8px 0 0;font-size:14px}
@@ -27,29 +27,33 @@ main>h2{margin:8px 0 0;font-size:20px}
 .chip{display:inline-block;font-size:12px;line-height:18px;padding:0 7px;border-radius:9px;background:var(--chip);color:var(--ink2);white-space:nowrap;margin:0 2px}
 .tree{list-style:none;margin:6px 0 4px;padding:0 0 0 14px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:14px}
 .num{font-weight:600}
-#overtime{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}
+#overtime{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:20px}
 .fig{display:flex;flex-direction:column;gap:8px;min-width:0}
 .fig .fighead{font-size:14px;font-weight:500}
 .fig svg{width:100%;height:auto;display:block}
-.fig svg text{fill:var(--muted);font-size:9px;font-family:'IBM Plex Mono',monospace}
+.fig svg text{fill:var(--muted);font-size:9px;font-family:"Courier Prime","Courier New",monospace}
 .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted)}
 .key i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.bignum{display:flex;flex-wrap:wrap;gap:8px 28px;padding:4px 0}
+.bignum div strong{display:block;font-size:28px;font-weight:600}
+#spark{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:16px}
 </style>
 </head>
 <body>
 <main>
 <nav></nav>
 <div>
-  <h1>Usage and supply</h1>
-  <div id="lead" class="note">aggregate reads of this site's own API: every number names the endpoint it came from · <b>test-</b> agents are excluded the same way /api/stats excludes them · no IP addresses are shown; any that turn up in fetched text are removed</div>
+  <h1>Dashboard</h1>
+  <div id="lead" class="note">aggregate reads of this site's own API: every number names the endpoint it came from · <b>test-</b> agents are excluded the same way /api/stats excludes them · no IP addresses, emails or host-declared home regions are shown; ISP classes and laptop availability notes are host-declared</div>
   <div id="summary" class="note">loading…</div>
   <div id="when" class="note"></div>
 </div>
 <h2>Supply</h2>
 <div class="board">
   <section class="card"><h2><span class="dot" id="d-supply"></span>Macs and couch slots</h2><div class="note src">GET /api/couch-slots — the broker's /fleet heartbeat cut to one row per slot</div><div id="supply"></div></section>
-  <section class="card"><h2><span class="dot" id="d-lines"></span>Home lines</h2><div class="note src">GET /api/agents (registrations) · GET /api/probe-scheduler (last_polled) · GET /api/stats (by_isp_class)</div><div id="lines"></div></section>
+  <section class="card"><h2><span class="dot" id="d-lines"></span>Home lines</h2><div class="note src">GET /api/agents (registrations) · GET /api/probe-scheduler (last_polled) · GET /api/stats (by_isp_class, host-declared) · GET /api/agents/{id}/appraisals?limit=1 (measured)</div><div id="lines"></div></section>
 </div>
+<section class="card"><h2><span class="dot" id="d-capacity"></span>Couch capacity</h2><div class="note src">GET /api/couch-slots · GET /api/broker-network</div><div id="capacity"></div></section>
 <h2>Use</h2>
 <div class="board">
   <section class="card"><h2><span class="dot" id="d-jobs"></span>Fetch jobs</h2><div class="note src">GET /api/stats · GET /api/bounties · GET /api/bounties/{id}/statement · GET /api/minion/rows</div><div id="jobs"></div></section>
@@ -61,18 +65,73 @@ main>h2{margin:8px 0 0;font-size:20px}
   <div class="note">one bar per UTC day, counted from each record's timestamp; hover a bar for the day and count</div>
   <div id="overtime"></div>
 </section>
+<section class="card"><h2><span class="dot" id="d-history"></span>Last 24 hours</h2><div class="note src">GET /api/stats/history · minute samples, seven days retained</div><div id="spark"></div><div id="history"></div></section>
+<details class="card" id="deals-tools"><summary>Your leases and receipts</summary>
+
+<div>
+<div class="lbl">Buyer console</div>
+<h2>Your leases</h2>
+<div class="note">Read your leases with your account secret and optional reply keys. These private records stay in this browser. Use Forget to clear them.</div>
+</div>
+<section class="card">
+<div class="grid">
+<div class="field wide"><label for="account-secret">Account secret (the <span class="mono">secret</span> in your CLI <span class="mono">DIR/account.json</span>)</label><input id="account-secret" class="mono" autocomplete="off" spellcheck="false"></div>
+<div class="field wide"><label for="account-keys">Lease reply keys (optional): your CLI <span class="mono">DIR/lease-*.json</span> files. With them this page opens each ended lease's receipts.</label><input id="account-keys" type="file" accept=".json" multiple></div>
+</div>
+<button id="account-forget" type="button">Forget secret and keys</button>
+<div id="account-err" class="err" role="status"></div>
+<div id="account-account" class="note"></div>
+</section>
+<div id="account-deals"></div>
+</details>
+<details class="card" id="index-tools"><summary>Browser fetch jobs</summary>
+
+<div>
+<div class="lbl">Buyer view</div>
+<h2>Private fetch jobs</h2>
+<div class="note">Your buyer key <span class="mono" id="buyer-buyer"></span> (kept in this browser)</div>
+</div>
+<div id="buyer-err" class="err"></div>
+
+<section class="card">
+<h2>1 · Pick an agent</h2>
+<div class="note">Registered agents show coarse facts only. The site checks each agent's registration attestation binds its encryption key.</div>
+<div class="scroll"><table><thead><tr><th></th><th>Agent</th><th>ISP class</th><th>Residential</th><th>Encryption key</th><th>Registration attestation</th><th>Registered</th></tr></thead><tbody id="buyer-agents"></tbody></table></div>
+</section>
+
+<section class="card">
+<h2>2 · Post a bounty</h2>
+<div class="note">Encrypted in this browser to the chosen agent's attested key (X25519, HKDF-SHA256, AES-256-GCM). The site stores only the ciphertext.</div>
+<form id="buyer-form" class="grid">
+<div class="field wide"><label for="buyer-task">Task</label><textarea id="buyer-task" rows="2" required></textarea></div>
+<div class="field wide"><label for="buyer-urls">URLs, one per line (GET only)</label><textarea id="buyer-urls" rows="3" required></textarea></div>
+<div class="field"><label for="buyer-max_requests">Max requests</label><input id="buyer-max_requests" type="number" min="1" required></div>
+<div class="field"><label for="buyer-deliver_by">Deliver by (UTC)</label><input id="buyer-deliver_by" type="datetime-local" required></div>
+<div class="field"><label for="buyer-max_price">Max price (USD)</label><input id="buyer-max_price" type="number" min="0" step="0.01" required></div>
+<div class="field wide"><button type="submit">Encrypt and send</button></div>
+</form>
+<div id="buyer-sent" class="note"></div>
+</section>
+
+<section class="card">
+<h2>3 · Your bounties</h2>
+<div class="note">Decisions and attested results appear here as the host posts them.</div>
+<div id="buyer-mine"></div>
+</section>
+</details>
+<details class="card" id="lease-statements"><summary>Lease statements</summary><p class="note">Public windows, coverage, and attestation checks. Domains and buyer details stay private.</p><div class="scroll"><table><thead><tr><th>Lease</th><th>Line</th><th>Status</th><th>Window</th><th>Coverage</th><th>Vantage</th><th>Statement</th></tr></thead><tbody id="statement-rows"></tbody></table></div><p id="statement-error" class="err" role="status"></p></details>
 </main>
 <script type="module">
 import { esc, nav, credits } from "./common.js";
-nav("Usage");
+nav("Dashboard");
 const $ = (id) => document.getElementById(id);
 // Nothing on this page may show an IP address, so any that turns up in fetched text (an error message, say) is removed.
 const IP = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f:])[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![0-9a-f:])/gi;
-const t = (s) => esc(String(s ?? "").replace(IP, "[address removed]"));
+const t = (s) => esc(String(s ?? "").replace(/[^\s<>@]+@[^\s<>@]+/g, "[email removed]").replace(IP, "[address removed]"));
 const hx = (s) => s ? t(s.slice(0, 10)) + "…" : "";
 async function get(u) {
   const r = await fetch(u, { cache: "no-store" }), body = await r.text();
-  if (!r.ok) throw new Error(`${u}: ${r.status} ${body.slice(0, 300)}`);
+  if (!r.ok) throw new Error(`${u}: ${r.status} `);
   return JSON.parse(body);
 }
 // Maybe: an endpoint this deploy does not have yet (404) reads as null instead of failing its card.
@@ -110,20 +169,67 @@ async function supply() {
   ];
 }
 
+async function capacity() {
+  const slots = await one("api/couch-slots");
+  const pubs = [...new Set(slots.map((s) => s.publisher))];
+  const online = pubs.filter((p) => slots.find((s) => s.publisher === p).online).length;
+  const ready = slots.filter((s) => s.online && s.state === "ready" && s.verified).length;
+  const busy = slots.filter((s) => s.state === "busy").length;
+  const util = slots.length ? `${(100 * busy / slots.length).toFixed(1)}%` : "—";
+  const since = slots.find((s) => s.online_share?.since)?.online_share.since;
+  const out = [row(online > 0, `<div class="bignum">
+      <div><strong>${online}</strong>of ${pubs.length} Macs online</div>
+      <div><strong>${slots.length}</strong>slots total</div>
+      <div><strong>${ready}</strong>ready</div>
+      <div><strong>${busy}</strong>busy</div>
+      <div><strong>${t(util)}</strong>utilization</div>
+    </div>`,
+    `ready = online Mac, slot state ready, attestation verified (as /api/market counts it) · utilization = busy ÷ slots total` +
+    (since ? ` · online share <b>since</b> ${t(new Date(since).toLocaleString())} (this site process's start; resets on restart)` : ""))];
+  // The broker's own /network answer: only its numbers and booleans are shown (a string could name a region or a person).
+  let net = null, err = null;
+  try { net = await one("api/broker-network"); } catch (e) { err = e; }
+  if (!net) return [...out, row(false, "<b>broker /network unreadable</b>", t(err?.message))];
+  const plain = Array.isArray(net) ? `${net.length} rows` :
+    Object.entries(net).filter(([, v]) => (typeof v === "number" && Number.isFinite(v)) || typeof v === "boolean").map(([k, v]) => `${t(k)} <b>${t(v)}</b>`).join(" · ") || "no numeric or boolean fields in its answer";
+  return [...out, row(true, "broker /relay-broker/network", `read same-origin through /api/broker-network · ${plain}`)];
+}
+
+const BOUNTY_KEYS = [["accepted", "var(--accent)"], ["declined", "var(--bad)"], ["done", "var(--ok)"], ["expired", "var(--na)"]];
+const classChart = (by) => {
+  const classes = Object.keys(by);
+  if (!classes.length) return `<div class="note">no lines registered</div>`;
+  const W = 720, H = 180, L = 30, R = 8, T = 14, B = 34, plot = H - T - B, gw = (W - L - R) / classes.length;
+  const max = Math.max(1, ...classes.flatMap((c) => BOUNTY_KEYS.map(([k]) => by[c][k] ?? 0)));
+  const y = (v) => T + plot * (1 - v / max);
+  let g = `<text x="${L - 5}" y="${T + 4}" text-anchor="end">${max}</text><text x="${L - 5}" y="${T + plot + 3}" text-anchor="end">0</text>` +
+    `<line x1="${L}" x2="${W - R}" y1="${T + plot}" y2="${T + plot}" stroke="var(--line)"/>`;
+  classes.forEach((c, i) => {
+    BOUNTY_KEYS.forEach(([k, color], j) => {
+      const v = by[c][k] ?? 0, group = gw - 10, bw = group / BOUNTY_KEYS.length - 2;
+      if (v > 0) g += `<rect x="${(L + i * gw + 5 + j * (group / BOUNTY_KEYS.length)).toFixed(1)}" y="${y(v).toFixed(1)}" width="${Math.max(2, bw).toFixed(1)}" height="${Math.max(1.5, T + plot - y(v)).toFixed(1)}" rx="1" fill="${color}"><title>${t(c)} · ${k}: ${v}</title></rect>`;
+    });
+    g += `<text x="${(L + i * gw + gw / 2).toFixed(1)}" y="${H - 20}" text-anchor="middle">${t(c.length > 16 ? c.slice(0, 15) + "…" : c)}</text>` +
+      `<text x="${(L + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${by[c].agents} line${by[c].agents === 1 ? "" : "s"} · ${by[c].bounties} job${by[c].bounties === 1 ? "" : "s"}</text>`;
+  });
+  return `<div class="fig"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="fetch jobs by ISP class">${g}</svg>` +
+    `<div class="legend">${BOUNTY_KEYS.map(([k, c]) => `<span class="key"><i style="background:${c}"></i>${k}</span>`).join("")}</div></div>`;
+};
+
 async function lines() {
   const [agents, sched, stats] = await Promise.all([one("api/agents"), one("api/probe-scheduler"), one("api/stats")]);
-  const polls = sched.last_polled ?? {}, rs = agents.filter(real);
-  const by = {};
-  for (const a of rs) (by[a.coarse.isp_class] ??= []).push(a);
-  const out = [row(null, `${rs.length} real home line${rs.length === 1 ? "" : "s"} · ${Object.keys(by).length} ISP class${Object.keys(by).length === 1 ? "" : "es"}`,
-    `${stats.excluded_test_agents} test- agents excluded (excluded_test_agents in GET /api/stats)`)];
-  for (const [cls, xs] of Object.entries(by)) {
-    const jobs = stats.by_isp_class?.[cls]?.bounties ?? null;
-    out.push(row(null, `${t(cls)} — ${xs.length} line${xs.length === 1 ? "" : "s"}${jobs !== null ? ` · ${jobs} fetch jobs` : ""}`,
-      xs.map((a) => {
-        const last = polls[a.agent_id] ? Date.parse(polls[a.agent_id]) : null;
-        return `${t(a.agent_id)} (${/laptop host/i.test(a.instructions) ? "<b>laptop host, may go offline</b>, " : ""}${a.verification?.ok ? "verified" : "<b>not verified</b>"}, registered ${ago(Date.parse(a.at))}${last !== null ? `, last probe poll ${ago(last)}` : ", no probe poll since the site process started"})`;
-      }).join("<br>")));
+  const rs = agents.filter(real), polls = sched.last_polled ?? {};
+  const measured = await Promise.allSettled(rs.map((a) => one(`api/agents/${encodeURIComponent(a.agent_id)}/appraisals?limit=1`)));
+  const out = [row(null, `${rs.length} real home lines · ${Object.keys(stats.by_isp_class ?? {}).length} ISP classes (host-declared)`,
+    `${stats.excluded_test_agents} test- agents excluded · registration classes and job counts from GET /api/stats`),
+    row(null, classChart(stats.by_isp_class ?? {}), "ISP classes are host-declared; bounty counts are site records")];
+  for (const [i, a] of rs.entries()) {
+    const read = measured[i], p = read.status === "fulfilled" ? read.value[0] : null;
+    const last = polls[a.agent_id] ? Date.parse(polls[a.agent_id]) : null;
+    out.push(row(read.status === "rejected" ? false : !a.verification?.ok ? false : p ? p.pass : null,
+      `${t(a.agent_id)} · ${t(a.coarse?.isp_class ?? "unknown")} (host-declared)`,
+      `${/laptop host/i.test(a.instructions) ? "<b>laptop host, may go offline (host-declared)</b> · " : ""}${a.verification?.ok ? "verified" : "<b>not verified</b>"} · registered ${ago(Date.parse(a.at))} · ${last !== null ? `last probe poll ${ago(last)}` : "no probe poll since the site process started"} · ` +
+      (read.status === "rejected" ? "latest appraisal unreadable" : p?.coarse ? `region ${t(p.coarse.region)}, ${t(p.coarse.isp_class)} (<b>measured</b>, latest appraisal ${ago(Date.parse(p.at))})` : "no measured region yet (no appraisal on the site)")));
   }
   if (!rs.length) out.push(row(false, "no real lines registered", "GET /api/agents holds only test- agents"));
   return out;
@@ -252,31 +358,244 @@ async function overtime() {
   ].join("");
 }
 
-const sections = { supply, lines, jobs, leases: leasesCard, stays, settle };
+// One sparkline per series over the last 24 h of the history; a flat series draws a midline.
+const spark = (name, color, xs) => {
+  const vs = xs.map((r) => r[name]), W = 320, H = 56, T = 6, B = 12, L = 4, R = 38;
+  const min = Math.min(...vs), max = Math.max(...vs), span = max - min;
+  const end = Date.now(), start = end - 24 * 3600e3;
+  const x = (i) => L + (W - L - R) * ((Date.parse(xs[i].t) - start) / (end - start)), y = (v) => span ? T + (H - T - B) * (1 - (v - min) / span) : (T + H - B) / 2;
+  const pts = vs.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return `<div class="fig"><div class="fighead">${t(name)} <span class="note">${span ? `${min}–${max}` : `steady ${vs[0]}`} → <b>${vs.at(-1)}</b> · ${vs.length} samples</span></div>` +
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${t(name)} over the last 24 hours"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/><text x="${W - R + 4}" y="${(y(vs.at(-1)) + 3).toFixed(1)}">${vs.at(-1)}</text></svg></div>`;
+};
+async function sparks() {
+  let rows = [];
+  try { rows = await one("api/stats/history"); } catch (e) { $("spark").innerHTML = ""; return [row(false, "<b>history unreadable</b>", t(e.message))]; }
+  const xs = rows.filter((r) => Date.parse(r.t) >= Date.now() - 24 * 3600e3 && Date.parse(r.t) <= Date.now()).sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+  if (xs.length < 2) { $("spark").innerHTML = ""; return [row(null, "not enough samples yet", "the site samples once a minute while the site runs; the first two samples draw the first sparklines")]; }
+  $("spark").innerHTML = [["ready", "var(--ok)"], ["busy", "var(--accent)"], ["bounties_done", "var(--na)"], ["leases", "var(--bad)"]]
+    .map(([n, c]) => spark(n, c, xs)).join("");
+  return [row(null, `${xs.length} samples · oldest ${ago(Date.parse(xs[0].t))} · leases is the count of active leases`, `7 days of history in GET /api/stats/history; bounties_done counts every finished fetch job so far`)];
+}
+
+
+const sections = { supply, capacity, lines, jobs, leases: leasesCard, stays, settle, history: sparks, overtime: async () => { await overtime(); return []; } };
 async function load() {
   seen = {}; // fresh reads each refresh
   const results = await Promise.all(Object.entries(sections).map(async ([id, f]) => {
     let rows;
     try {
       rows = await f();
-      if (!rows.length) rows = [row(false, "nothing listed")];
+      if (!rows.length && id !== "overtime") rows = [row(false, "nothing listed")];
     } catch (e) {
       rows = [row(false, "<b>could not read</b>", t(e.message))];
     }
-    $(id).innerHTML = rows.map((r) => r.html).join("");
+    if (id !== "overtime" || rows.length) $(id).innerHTML = rows.map((r) => r.html).join("");
     const down = rows.filter((r) => r.ok === false).length;
-    $("d-" + id).className = "dot " + (down ? "down" : rows.some((r) => r.ok) ? "up" : "");
+    if ($("d-" + id)) $("d-" + id).className = "dot " + (down ? "down" : rows.some((r) => r.ok) ? "up" : "");
     return down ? id : null;
   }));
   const bad = results.filter(Boolean);
   $("summary").className = bad.length ? "down" : "up";
   $("summary").textContent = bad.length ? `Needs attention: ${bad.join(", ")}` : "All sections read";
-  $("when").textContent = `checked ${new Date().toLocaleTimeString()} · refreshes every 60 s · daily buckets are UTC`;
-  overtime().catch((e) => { $("overtime").innerHTML = `<div class="err">${t(e.message)}</div>`; });
+  $("when").textContent = `checked ${new Date().toLocaleTimeString()} · refreshes every 30 s · daily buckets are UTC`;
+
 }
 
 load();
-setInterval(load, 60000);
+setInterval(load, 30000);
+</script>
+<script type="module">
+const fail = e => { document.querySelector("#account-err").textContent = e.message; };
+
+import { api, esc, nav, verdict, credits, hex, unhex } from "./common.js";
+
+const S = crypto.subtle, te = new TextEncoder();
+const store = { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v), del: (k) => localStorage.removeItem(k) };
+const keys = () => JSON.parse(store.get("resip-lease-keys") ?? "{}");
+const sha = async (b) => hex(await S.digest("SHA-256", b));
+const canonical = (v) => Array.isArray(v) ? "[" + v.map(canonical).join(",") + "]" : v && typeof v === "object" ?
+  "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}" : JSON.stringify(v);
+document.querySelector("#account-secret").value = store.get("resip-account-secret") ?? "";
+let last = "";
+
+async function get(path, secret) {
+  const r = await fetch("api/" + path, secret ? { headers: { authorization: "Bearer " + secret } } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(`${r.status}: ${j.error}`);
+  return j;
+}
+
+// As resip.ts status: open receipts_enc with the lease's reply key and check the chain reaches the statement's end_head.
+async function receipts(l, jwk) {
+  const e = l.end.receipts_enc, st = l.end.statement;
+  const z = await S.deriveBits({ name: "X25519", public: await S.importKey("raw", unhex(e.epk), { name: "X25519" }, false, []) }, await S.importKey("jwk", jwk, { name: "X25519" }, false, ["deriveBits"]), 256);
+  const key = await S.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: te.encode("resip-receipts/1") }, await S.importKey("raw", z, "HKDF", false, ["deriveKey"]), { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const rc = JSON.parse(new TextDecoder().decode(await S.decrypt({ name: "AES-GCM", iv: unhex(e.nonce) }, key, unhex(e.ct))));
+  const problems = [];
+  let head = rc.start_prev_head;
+  if (head !== st.log.start_prev_head || rc.rows[0].seq !== st.log.start_seq || rc.rows.at(-1).seq !== st.log.end_seq) problems.push("receipts do not span the statement's window");
+  for (const [i, r] of rc.rows.entries()) {
+    if (r.seq !== st.log.start_seq + i) problems.push("rows not contiguous at " + r.seq);
+    if (r.entry && await sha(te.encode(canonical(r.entry))) !== r.digest) problems.push("entry digest mismatch at " + r.seq);
+    head = await sha(unhex(head + r.digest));
+  }
+  if (head !== st.log.end_head) problems.push("chain does not reach end_head");
+  const own = rc.rows.filter((r) => r.entry).map((r) => r.entry), reqs = own.filter((x) => x.kind === "request");
+  return { problems, rows: rc.rows.length, reqs: reqs.length, ok2xx: reqs.filter((x) => x.status >= 200 && x.status < 400).length, refused: own.filter((x) => x.kind === "refused").length };
+}
+
+function deal({ l, s, rc }) {
+  const st = l.end?.statement, d = l.decision, covered = s.periods.filter((p) => p.covered).length;
+  const spent = l.charged ?? 0, refunded = l.status === "declined" ? l.funds : l.end ? l.funds - spent : null;
+  return `<section class="card" style="margin-bottom:24px">
+  <div><strong class="${l.status === "active" ? "ok" : l.status === "declined" ? "bad" : ""}">${esc(l.status)}</strong> · lease <span class="mono">${esc(l.id)}</span> · line <span class="mono">${esc(l.agent_id)}</span> · ${l.exclusive === undefined ? "" : l.exclusive ? "exclusive" : "shared"}</div>
+  ${d ? `<div class="note">Decision: ${esc(d.decision)} · ${esc(d.reason)}</div>` : `<div class="note">Waiting for the line's decision.</div>`}
+  <div class="stats">
+    <div><strong>${s.window ? `${covered} / ${s.periods.length}` : "–"}</strong>periods covered${l.status === "active" ? " so far" : ""}</div>
+    <div><strong>${credits(l.funds)}</strong>held (deposit and top-ups)</div>
+    <div><strong>${credits(spent)}</strong>spent${l.status === "active" ? " so far" : ""}</div>
+    <div><strong>${refunded === null ? "at end" : credits(refunded)}</strong>refunded</div>
+  </div>
+  ${s.window ? `<div class="mono">${esc(s.window.start)} .. ${esc(s.window.end ?? s.window.term_end)}${d?.price_per_gb ? ` · ${credits(d.price_per_gb)} per GB · paid for ${esc(l.paid_bytes)} bytes` : ""}</div>` : ""}
+  ${st ? `<div>Requests to your domains (${st.domains.map(esc).join(", ")}): <strong>${st.requests_to_domains}</strong>, by this lease ${st.requests_by_lease}, refused to others ${st.refused_to_others}, shared with ${st.shared_with} other lease(s). Ended: ${esc(l.end.end_reason)}.</div>
+    ${st.bytes_by_period ? `<div>Traffic: <strong>${st.bytes_up + st.bytes_down}</strong> bytes (${st.bytes_up} up, ${st.bytes_down} down) in ${st.bytes_by_period.length} period(s) of 300 s.</div>` : ""}
+    <div>${esc(st.claim)}</div>
+    ${rc ? `<div>Receipts: ${rc.problems.length ? `<span class="bad">${rc.problems.map(esc).join("; ")}</span>` : `<span class="ok">chain of ${rc.rows} entries reaches the statement's end_head</span>`}.
+      Your requests: ${rc.reqs}, answered 2xx/3xx ${rc.ok2xx}${rc.reqs ? ` (${Math.round((100 * rc.ok2xx) / rc.reqs)}%)` : ""}; refused by the line ${rc.refused}.</div>`
+      : `<div class="note">Add this lease's <span class="mono">lease-${esc(l.id)}.json</span> above to open its receipts (per-request status).</div>`}
+    <div>Statement signature: ${verdict(l.end.verification)} <span class="note">checked by the site, not in this browser; build still allowed by custody: ${esc(s.measurement_current)}</span></div>
+    <details><summary>full statement</summary><pre>${esc(JSON.stringify(st, null, 1))}</pre></details>`
+    : l.status === "active" ? `<div class="note">Request counts and the signed statement arrive when the lease ends.</div>` : ""}
+  </section>`;
+}
+
+async function load() {
+  const secret = store.get("resip-account-secret");
+  if (!secret) { document.querySelector("#account-account").textContent = "Paste your account secret to see your leases."; document.querySelector("#account-deals").innerHTML = ""; last = ""; return; }
+  const id = await sha(unhex(secret)), acct = await get("accounts/" + id, secret), ks = keys();
+  const ids = [...new Set(acct.entries.map((e) => /^deposit, lease ([0-9a-f-]{36})$/.exec(e.what)?.[1]).filter(Boolean))].reverse();
+  const deals = await Promise.all(ids.map(async (lid) => {
+    const [l, s] = await Promise.all([get("leases/" + lid, secret), get(`leases/${lid}/statement`, secret)]);
+    return { l, s, rc: l.end?.receipts_enc && ks[lid] ? await receipts(l, ks[lid]) : null };
+  }));
+  if (store.get("resip-account-secret") !== secret) return;
+  const key = JSON.stringify([acct, deals]);
+  if (key === last) return;
+  last = key;
+  document.querySelector("#account-account").innerHTML = `Account <span class="mono">${esc(id)}</span> · staging balance ${credits(acct.balance)} · ${ids.length} lease(s) · ${Object.keys(ks).length} reply key(s) loaded`;
+  document.querySelector("#account-deals").innerHTML = ids.length ? deals.map(deal).join("") : `<section class="card note">No leases from this account yet.</section>`;
+}
+
+document.querySelector("#account-secret").addEventListener("change", (ev) => {
+  const v = ev.target.value.trim();
+  if (!/^[0-9a-f]{64}$/.test(v)) return fail(new Error("The account secret is 64 lowercase hex characters."));
+  document.querySelector("#account-err").textContent = "";
+  store.set("resip-account-secret", v);
+  load().catch(fail);
+});
+document.querySelector("#account-keys").addEventListener("change", async (ev) => {
+  try {
+  const ks = keys();
+  for (const f of ev.target.files) {
+    const j = JSON.parse(await f.text());
+    if (!j.id || !j.reply_jwk) return fail(new Error(`${f.name}: not a lease file (needs id and reply_jwk)`));
+    ks[j.id] = j.reply_jwk;
+  }
+  store.set("resip-lease-keys", JSON.stringify(ks));
+  document.querySelector("#account-err").textContent = "";
+  await load();
+  } catch(e) { fail(e); }
+});
+document.querySelector("#account-forget").addEventListener("click", () => {
+  store.del("resip-account-secret"); store.del("resip-lease-keys");
+  document.querySelector("#account-secret").value = "";
+  document.querySelector("#account-keys").value = "";
+  document.querySelector("#account-err").textContent = "";
+  load().catch(fail);
+});
+await load().catch(fail);
+setInterval(() => load().catch(fail), 10000);
+
+
+</script>
+<script type="module">
+const fail = e => { document.querySelector("#buyer-err").textContent = e.message; };
+
+import { api, publicEsc as esc, short, cents, nav, verdict, hex, seal } from "./common.js";
+
+let buyer = localStorage.getItem("resip-buyer");
+if (!buyer) { buyer = hex(crypto.getRandomValues(new Uint8Array(16))); localStorage.setItem("resip-buyer", buyer); }
+document.querySelector("#buyer-buyer").textContent = buyer;
+let agents = [];
+const shown = {};
+const show = (id, data, html) => { const k = JSON.stringify(data); if (shown[id] !== k) { shown[id] = k; document.querySelector(id).innerHTML = html(); } };
+
+async function loadAgents() {
+  agents = await api("agents");
+  const picked = document.querySelector("input[name=agent]:checked")?.value;
+  show("#buyer-agents", agents, () => agents.length ? agents.map((a) => `<tr>
+    <td><input type="radio" name="agent" value="${esc(a.agent_id)}" ${a.agent_id === picked ? "checked" : ""} aria-label="choose ${esc(a.agent_id)}"></td>
+    <td class="mono">${esc(a.agent_id)}${a.agent_id.startsWith("test-") ? ' <span class="bad">TEST</span>' : ""}</td>
+    <td>${esc(a.coarse.isp_class)}</td><td>${a.coarse.residential ? "yes" : "no"}</td>
+    <td class="mono">${short(a.enc_pub)}</td><td>${verdict(a.verification)}</td><td class="mono">${esc(a.at)}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="note">No agents registered yet.</td></tr>`);
+}
+
+function item(i) {
+  return `<tr><td class="mono">${esc(i.url)}</td><td>${esc(i.status)}</td><td class="mono">${short(i.sha256)}</td><td>${esc(i.bytes)}</td><td class="mono">${short(i.cert_sha256)}</td><td class="mono">${esc(i.fetched_at)}</td></tr>`;
+}
+
+async function loadMine() {
+  const bs = (await api("bounties?buyer_key=" + buyer)).reverse();
+  show("#buyer-mine", bs, () => bs.length ? bs.map((b) => {
+    const d = b.decision, r = b.result;
+    return `<div class="box">
+    <div><strong>${esc(b.status)}</strong> · bounty <span class="mono">${esc(b.id)}</span> · agent <span class="mono">${esc(b.agent_id)}</span> · posted ${esc(b.at)} · ciphertext ${b.enc.ct.length / 2} bytes</div>
+    ${d ? `<div>Decision: <strong>${esc(d.decision)}</strong> · quote ${cents(d.quote)} · ${esc(d.reason)}
+      <div class="note">policy <span class="mono">${esc(d.policy_sha256 ?? "none")}</span></div>
+      <details><summary>forecasts</summary><pre>${esc(JSON.stringify(d.forecasts, null, 2))}</pre></details></div>` : `<div class="note">Waiting for the agent's decision.</div>`}
+    ${r ? `<div>Result: region ${esc(r.result.region)} · ISP class ${esc(r.result.isp_class)} · residential ${esc(r.result.residential)} · IP withheld</div>
+      <div class="scroll"><table><thead><tr><th>URL</th><th>Status</th><th>Content sha256</th><th>Bytes</th><th>Cert sha256</th><th>Fetched</th></tr></thead><tbody>${r.result.items.map(item).join("")}</tbody></table></div>
+      <div>Result attestation: ${verdict(r.verification)}</div>
+      <details><summary>attestation blob (hex)</summary><div class="mono">${esc(r.attestation)}</div></details>`
+      : b.expired ? `<div class="bad">Expired ${esc(b.expired.at)}: ${esc(b.expired.reason)}</div>` : d?.decision === "accept" ? `<div class="note">Accepted; waiting for the result.</div>` : ""}
+    </div>`;
+  }).join("") : `<div class="note">No bounties from this browser yet.</div>`);
+}
+
+document.querySelector("#buyer-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+  document.querySelector("#buyer-err").textContent = "";
+  const agent = agents.find((a) => a.agent_id === document.querySelector("input[name=agent]:checked")?.value);
+  if (!agent) return fail(new Error("Pick an agent first."));
+  const v = (id) => document.querySelector("#buyer-" + id).value;
+  const bounty = { task: v("task"), urls: v("urls").split("\n").map((s) => s.trim()).filter(Boolean), method: "GET",
+    max_requests: Number(v("max_requests")), deliver_by: new Date(v("deliver_by") + "Z").toISOString(), max_price: Math.round(Number(v("max_price")) * 100) };
+  const posted = await api("bounties", { agent_id: agent.agent_id, buyer_key: buyer, enc: await seal(agent.enc_pub, JSON.stringify(bounty)) }).catch(fail);
+  if (!posted) return;
+  document.querySelector("#buyer-sent").textContent = `Sent bounty ${posted.id}: ${posted.enc.ct.length / 2} bytes of ciphertext to ${agent.agent_id}.`;
+  await loadMine();
+  } catch(e) { fail(e); }
+});
+
+const tick = () => Promise.all([loadAgents(), loadMine()]).catch(fail);
+await tick();
+setInterval(tick, 5000);
+
+
+</script>
+<script type="module">
+import { api, esc, short, leaseCells } from "./common.js";
+async function statements() {
+ try {
+  const ls = (await api("leases")).filter(l => !l.agent_id.startsWith("test-")).reverse();
+  document.querySelector("#statement-rows").innerHTML = ls.length ? ls.map(l => `<tr><td class="mono">${short(l.id)}</td><td>${esc(l.agent_id)}</td><td>${esc(l.status)}</td>${leaseCells(l)}</tr>`).join("") : '<tr><td colspan="7">No leases yet.</td></tr>';
+  document.querySelector("#statement-error").textContent = "";
+ } catch(e) { document.querySelector("#statement-error").textContent = e.message; }
+}
+await statements(); setInterval(statements, 30000);
 </script>
 </body>
 </html>

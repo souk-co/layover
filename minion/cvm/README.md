@@ -36,12 +36,14 @@ two-hour window and units during that epoch. Register the key under an approved
 app before submitting signatures. Contract operator payout caps still apply.
 
 Install minion/cvm/requirements.txt plus pytest and run `pytest minion` with
-Forge on PATH and DSMACK pointing to the mainnet-remaining checkout. The digest
+Forge on PATH and DSMACK pointing to a dsmack checkout containing
+`contracts/src/LastResortBuyer.sol` and `contracts/src/LayoverCredit.sol`, with
+its submodules initialized. The digest
 test reads its contracts without modifying the checkout. Without the PyPI
 dstack-sdk package, minion/conftest.py falls back to minion/stubs/dstack_sdk.py,
 which speaks the same /GetKey wire protocol (dsmack applications/relay-broker/key.ts);
 test_sim_dstack_socket runs the service against the sim's guest-agent stand-in
-(origin/sim sim/dstack-sim.ts, deno) and covers address stability across restarts,
+(`sim/dstack-sim.ts`, Deno) and covers address stability across restarts,
 path separation, and /signed recovery. The sim's signature_chain is always empty,
 so that test stubs out the KMS chain check; the real service fails closed on it.
 

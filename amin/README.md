@@ -1,22 +1,19 @@
-# The amin: the IP souk on the Souk host
+# Layover amin
 
-A custom Souk bundle for the residential-IP souk. Its agent, the amin, enrolls Mac mini lines from attested appraisals,
-matches buyers to lines and settles each lease from resip's public lease statement. The amin never holds or moves payment: the
-program holds the price in souk credits (the second rail while escrow contracts come up).
-The journeys and pass criteria are in `../notes/journeys.html`.
+A custom Souk bundle for the residential-IP market. Its agent, the amin, enrolls Mac lines from attested appraisals,
+matches buyers to lines and follows settlement from the site's public lease statements. The amin never holds or moves payment.
+The program holds souk credits for legacy deals; token-backed leases use GuestEscrow.
 
 ## Provenance
 
 - Prompts are built from nikete's branch `claude/souk-mechanism-docs` of souk-co/souk (PR #620) at
   `00e6e9d2e9bf7ece0caeeb468aaab04a2ec91939`: `docs/plans/souk-residential-egress-2026-11-04.md`,
-  `souk-mechanisms-as-implemented-2026-11-03.md`, and the souk call of 2026-11-04 (gemini notes, about lines
-  1280-1800). To re-pull: `git -C ~/projects/teleport/souk-xyn fetch origin claude/souk-mechanism-docs`, diff those
+  `souk-mechanisms-as-implemented-2026-11-03.md`, and the souk call of 2026-11-04. To update, diff those
   files against the commit above, carry changes into `prompts/charter.md`, set `NIKETE_COMMIT` in `build.py`, and
   `python3 build.py revise SOUK`.
 - Program written against souk-co/souk `dev` at `4a89f08` (host SDK, credits kit, dining-matching's hold pattern).
-- Appraisal minion pin: the private guest branch at `a7641458731d332588b8b17650bfb1dcac2babd4`
+- Appraisal guest pin: `a7641458731d332588b8b17650bfb1dcac2babd4`
   (`APPRAISAL_PIN` in `build.py`). Moving the pin is a souk revision.
-- Endpoint shapes: lane C, `../notes/amin-endpoints-handoff.md` (branch `amin-endpoints`).
 
 ## Files
 
@@ -26,9 +23,7 @@ The journeys and pass criteria are in `../notes/journeys.html`.
   `{{RESIP}}`, `{{NIKETE_COMMIT}}`, `{{APPRAISAL_PIN}}`.
 - `build.py`: `show | create | revise SOUK`, using `$SOUK_HOME/credential.json` from a connector login. It calls the
   host API directly because the connector's `create --program` leaves out `guide.md`.
-- `release.py`: `smoke | full | release SOUK`. A ~75 s smoke gate blocks `souk_revise`; the full suite runs after, in parallel,
-  and a failure files an `area:amin` issue with the revision to roll back to.
-- `test/`: engine tests with a scripted judge and `fixtures.json` in lane C's shapes; `stub_app.py` serves the
+- `test/`: engine tests with a scripted judge and endpoint responses in `fixtures.json`; `stub_app.py` serves the
   fixtures as a tee-daemon python app (not deployed).
 
 ## Mechanism
@@ -106,11 +101,11 @@ The program parses the fetched page out of the `web_fetch` tool result and requi
 - An appraisal is bound to the souk member through the appraisal request's `requested_by`, which the site records as
   sent. Anyone who knows a host's person id and can reach the site can file a request in that name; the guest runs
   it on the owner's Mac, so the result still describes the owner's line. One owner per `agent_id`.
-- The resip lease is not bound to the buyer's souk account. The program binds it by agent id and single use. The
+- The legacy site-credit lease is not bound to the buyer's souk account. The program binds it by agent id and single use. The
   holder's bearer key would let the buyer prove the lease is theirs.
-- The resip lease also draws on resip's staging balance; the souk escrow is the settlement of record.
+- The legacy lease also draws on the site's staging balance; the souk escrow is the settlement of record.
 - The site's `/verified` serves a cached verdict (`checked_at` lags the fetch by hours), so freshness rests on `at`, the pin and the custody check as last computed by the site.
-- Bonds, slashing, spot checks and complaints (nikete §3, journeys step 8) are not built.
+- Bonds, slashing, spot checks and complaints are not built.
 
 ## Tests
 
@@ -147,7 +142,7 @@ accepted terms retain the existing start/end watchdog and on-chain close/claim
 semantics, so clients must close unused terms explicitly. There is no invented
 refund or final per-fetch price.
 
-`tools/first_fetch.py` is the buyer orchestration helper (uses an already
+`web/static/kit/first_fetch.py` is the buyer orchestration helper (uses an already
 signed-in account and a supplied buyer kit). Its operation file is private and
 must be reused after interruption. Transport admission requires the separate
 wallet-bound token authorization endpoint; an unfunded legacy deployment will

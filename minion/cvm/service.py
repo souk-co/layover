@@ -1,5 +1,6 @@
 """Socket-only dstack signer. Run with python minion/cvm/service.py."""
 import json
+import logging
 import os
 from pathlib import Path
 import stat
@@ -45,6 +46,7 @@ def server(minion, address=('0.0.0.0', 8080)):
                     return
                 body, status = json.dumps(result).encode(), 200
             except Exception:
+                logging.exception('minion request failed')
                 body, status = b'{"error":"signing failed"}', 503
             self.send_response(status)
             self.send_header('Content-Type', 'application/json')

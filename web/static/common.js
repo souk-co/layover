@@ -1,6 +1,9 @@
 export const hex = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
 export const unhex = (s) => Uint8Array.from(s.match(/../g), (x) => parseInt(x, 16));
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const PUBLIC_IP = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-f:])(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}(?![0-9a-f:])|(?<![0-9a-f:])[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![0-9a-f:])/gi;
+export const publicText = s => String(s ?? "").replace(/[^\s<>@]+@[^\s<>@]+/g, "[email removed]").replace(PUBLIC_IP, "[address removed]");
+export const publicEsc = s => esc(publicText(s));
 export const short = (s) => s ? esc(s.slice(0, 10)) + "…" : "";
 export const cents = (n) => n === null || n === undefined ? "" : "$" + (n / 100).toFixed(2);
 
@@ -8,38 +11,43 @@ export const cents = (n) => n === null || n === undefined ? "" : "$" + (n / 100)
 export const credits = (c) => `${Math.round(c)} credits <span class="note">($${(c / 100).toFixed(2)})</span>`;
 
 // GET /api/agents/{id}/probes; null while the site has no such route (404), any other failure throws.
-export async function probes(agent_id) {
-  const r = await fetch(`api/agents/${encodeURIComponent(agent_id)}/probes`);
-  if (r.status === 404) return null;
-  const j = await r.json();
-  if (!r.ok) throw new Error(`${r.status}: ${j.error}`);
+async function request(path, options = {}, optional = false) {
+  const url = "api/" + path;
+  let r;
+  try { r = await fetch(url, options); }
+  catch (e) { throw new Error(`${url}: network request failed (${e.message}). Check connectivity and retry.`); }
+  if (optional && r.status === 404) return null;
+  const text = await r.text();
+  let j;
+  try { j = JSON.parse(text); }
+  catch { throw new Error(`${url}: HTTP ${r.status}; expected JSON from the site`); }
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status}: ${j.error ?? "request failed"}`);
   return j;
 }
-
+export async function probes(agent_id) {
+  return await request(`agents/${encodeURIComponent(agent_id)}/probes`, {}, true);
+}
 export async function api(path, body) {
-  const r = await fetch("api/" + path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
-  const j = await r.json();
-  if (!r.ok) throw new Error(`${r.status}: ${j.error}`);
-  return j;
+  return await request(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
 }
 
 export function nav(on) {
-  const pages = [["layover.html", "Layover"], ["index.html", "Buyer"], ["deals.html", "Deals"], ["supplier.html", "Supplier"], ["provider.html", "Provider"], ["public.html", "Public"], ["leases.html", "Leases"], ["dashboard.html", "Usage"], ["status.html", "Status"]];
-  document.querySelector("nav").innerHTML = pages.map(([h, t]) => `<a href="${h}" class="${t === on ? "on" : ""}">${t}</a>`).join("") +
-    `<span class="note">resip staging · real records only</span>`;
+  const pages = [["layover.html", "Layover"], ["provider.html", "Lines"], ["dashboard.html", "Dashboard"], ["status.html", "Status"], ["https://github.com/souk-co/layover", "GitHub"]];
+  const element = document.querySelector("nav");
+  element.setAttribute("aria-label", "Main navigation");
+  element.innerHTML = pages.map(([h, t]) => `<a href="${h}"${t === on ? ' aria-current="page"' : ""}>${t}</a>`).join('<span class="sep" aria-hidden="true">·</span>');
 }
 
 export function verdict(v) {
   if (!v) return "";
-  return `<span class="${v.ok ? "ok" : "bad"}">${v.ok ? "verified on site" : "not verified on site"}</span> <span class="note">App Attest mode: ${esc(v.mode ?? "none")}</span>
+  return `<span class="${v.ok ? "ok" : "bad"}">${v.ok ? "verified on site" : "not verified on site"}</span> <span class="note">App Attest mode: ${publicEsc(v.mode ?? "none")}</span>
   <details><summary>checks</summary><div class="box">${v.checks.map((c) =>
-    `<div><span class="${c.ok ? "ok" : "bad"}">${c.ok ? "pass" : "fail"}</span> ${esc(c.name)}<div class="mono note">${esc(c.detail)}</div></div>`).join("")}
-  <div class="note">run <span class="mono">${esc(v.facts.run)}</span><br>manifest <span class="mono">${esc(v.facts.manifest_sha256)}</span><br>os image <span class="mono">${esc(v.facts.os_image_hash)}</span><br>checked ${esc(v.checked_at)}</div></div></details>`;
+    `<div><span class="${c.ok ? "ok" : "bad"}">${c.ok ? "pass" : "fail"}</span> ${publicEsc(c.name)}<div class="mono note">${publicEsc(c.detail)}</div></div>`).join("")}
+  <div class="note">run <span class="mono">${publicEsc(v.facts.run)}</span><br>manifest <span class="mono">${publicEsc(v.facts.manifest_sha256)}</span><br>os image <span class="mono">${publicEsc(v.facts.os_image_hash)}</span><br>checked ${publicEsc(v.checked_at)}</div></div></details>`;
 }
 
 export function fail(e) {
-  document.querySelector("#err").textContent = String(e.message ?? e);
-  throw e;
+  document.querySelector("#err").textContent = publicText(e.message ?? e);
 }
 
 // X25519 ECDH, HKDF-SHA256 (empty salt, info "resip-bounty/1" for bounties and leases), AES-256-GCM with the tag appended; all hex.
