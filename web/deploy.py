@@ -107,6 +107,13 @@ manifest = {"name": NAME, "source": "tarball://" + NAME, "ref": ref, "runtime": 
 if SITE and os.environ.get("SOUK_DOORMAN_CREDENTIAL"):
     assert os.environ["SOUK_DOORMAN_CREDENTIAL"] != "<redacted>", "withheld secret is not a credential"
     manifest["env"] = {"SOUK_DOORMAN_CREDENTIAL": os.environ["SOUK_DOORMAN_CREDENTIAL"]}
+if SITE:
+    for key in ("STARTERS_PER_DAY", "STARTERS_PER_DOMAIN_PER_DAY"):
+        if key in os.environ:
+            assert os.environ.get("SOUK_DOORMAN_CREDENTIAL"), "setting caps requires SOUK_DOORMAN_CREDENTIAL because manifest env replaces stored env"
+            value = os.environ[key]
+            assert value.isdecimal(), f"{key} must be a non-negative integer"
+            manifest.setdefault("env", {})[key] = value
 if ISOLATION == "container":
     manifest["listen"] = {"port": 8080, "protocol": "http"}
 b = "resip-" + secrets.token_hex(16)

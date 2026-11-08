@@ -16,7 +16,7 @@ from urllib.request import Request, urlopen
 HERE, BASE, NAME = Path(__file__).resolve().parent, "https://pod.dstack.soc1024.com", "layover-accounts"
 ENV = {"RPC": "https://sepolia.base.org", "CHAIN_ID": "84532", "TOKEN": "0x9e851Bf5E3b613aaA09853A07D1132F49c90b515",
        "ESCROW": "0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA", "SOUK_URL": "https://souk-dev.dstack.soc1024.com",
-       "SOUK_ID": "31f5c141-fb2d-4572-939a-68543a2d0649", "STARTER": "5000000", "STARTERS_PER_DAY": "200", "RELAYS_PER_DAY": "20"}
+       "SOUK_ID": "31f5c141-fb2d-4572-939a-68543a2d0649", "STARTER": "5000000", "STARTERS_PER_DAY": "200", "STARTERS_PER_DOMAIN_PER_DAY": "20", "RELAYS_PER_DAY": "20"}
 
 
 def token():

@@ -17,11 +17,11 @@ import guest_attest
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def call(path, body=None, secret=None):
+def call(path, body=None, secret=None, timeout=60):
     req = urllib.request.Request(base + "/api/" + path, data=None if body is None else json.dumps(body).encode(), method="GET" if body is None else "POST",
                                  headers={"content-type": "application/json", **({"authorization": "Bearer " + secret} if secret else {})})
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read())
     except HTTPError as e:
         return e.code, json.loads(e.read())
@@ -41,6 +41,22 @@ def show(label, got):
     print(label, json.dumps(got)[:400])
     return got
 
+
+# One bounded cold-start read, before creating any smoke-test state. No retries:
+# report the elapsed wait and the response or exception that ended it.
+def wait_for_market():
+    started = time.monotonic()
+    print("waiting up to 60 s for /api/market (cold-start cache)", flush=True)
+    try:
+        status, body = call("market", timeout=60)
+    except Exception as error:
+        print(f"/api/market after {time.monotonic() - started:.1f} s: {type(error).__name__}: {error}", flush=True)
+        raise
+    print(f"/api/market after {time.monotonic() - started:.1f} s: HTTP {status}", flush=True)
+    assert status == 200, (status, body)
+
+
+wait_for_market()
 
 sk = X25519PrivateKey.generate()
 enc_pub = sk.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)

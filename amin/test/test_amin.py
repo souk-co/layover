@@ -1653,3 +1653,79 @@ def test_restricted_line_without_quick_opt_in_still_matches_and_settles_fetch(e)
     named(e, t, bounty(t, 1, served=5, passed=True))
     assert ledger(e)["accounts"]["H"] == 1001
     assert "1 credits to the seller" in said(e, t)
+
+
+@pytest.mark.parametrize("threaded,accepted", [(False, 3), (True, 10)])
+def test_member_flood_is_bounded_and_another_member_gets_a_reply(e, threaded, accepted):
+    before = sum(r["kind"] == "Output" for r in e.inbox("B"))
+    request = json.dumps(dict(task="run a small test", minutes=5))
+    send(e, "B", request, kind="couch")
+    first = newest(e)
+    for _ in range(29):
+        send(e, "B", "follow up" if threaded else request,
+             kind="message" if threaded else "couch", thread=first if threaded else None)
+    assert len(queued(e)) == accepted
+    fixed = f"You have {1 if threaded else 3} open requests; wait for replies or close one"
+    replies = [r["payload"]["text"] for r in e.inbox("B") if r["kind"] == "Output"]
+    assert replies[before:] == [fixed] * (30 - accepted)
+    join(e, "M", ("buyer",))
+    send(e, "M", request, kind="couch")
+    other = newest(e)
+    assert len(queued(e)) == accepted + 1
+    for _ in range(accepted + 1):
+        agent(e, ("post", dict(thread=queued(e)[0]["thread"], text="Your request was handled normally.")))
+    assert "Your request was handled normally." in json.dumps(e.read(other, "M"))
+    assert not queued(e)
+
+
+def test_bucket_refills_and_close_frees_a_slot_without_a_run(e):
+    request = json.dumps(dict(task="small test", minutes=5))
+    for _ in range(3):
+        send(e, "B", request, kind="couch")
+    t = newest(e)
+    send(e, "B", "", kind="close", thread=t)
+    assert "closed" in e.rows("threads")[t]["flags"] and len(queued(e)) == 3
+    send(e, "B", request, kind="couch")
+    t = newest(e)
+    for _ in range(6):
+        send(e, "B", "follow up", thread=t)
+    assert len(queued(e)) == 10
+    for at, count in ((69, 10), (70, 11), (70, 11), (670, 12)):
+        e.clock = lambda: at
+        e.receive(Message(Member("B"), "follow up", souk=e.souk, thread=t, at=at))
+        e.deliver()
+        assert len(queued(e)) == count
+
+
+def test_only_creator_reads_member_limits_and_models_do_not(tmp_path):
+    b = bundle()
+    e = Engine(Store(tmp_path / "limits.sqlite"), "ip", sandbox=Sandbox(local_unconfined=True), clock=lambda: 10)
+    e.install(b.pop("souk.py"), created_by="H", bundle=b)
+    join(e, "B", ("buyer",))
+    join(e, "Arb", ("host", "buyer", "arbiter"))
+    send(e, "B", json.dumps(dict(task="small test", minutes=5)), kind="couch")
+    t = newest(e)
+    send(e, "H", "", kind="limits")
+    counts = json.loads([r for r in e.inbox("H") if r["kind"] == "Output"][-1]["payload"]["text"])
+    assert counts["B"] == dict(open=1, tokens=9)
+    assert counts["Arb"] == dict(open=0, tokens=10)
+    send(e, "Arb", "", kind="limits")
+    assert [r for r in e.inbox("Arb") if r["kind"] == "Output"][-1]["payload"]["text"] == "Creator only."
+    assert len(queued(e)) == 1
+    context = e.agent_context(dict(see=["thread", "resident"], thread=t, sender=None))
+    assert not any("limit" in r for r in context)
+    assert not [r for r in e.store.events(e.souk) if r["kind"] in ("ActionError", "ProgramError")]
+    assert e.replay() == e.store.view(e.souk)
+    e.store.db.close()
+
+
+def test_exhausted_member_can_settle_but_cannot_close_an_accepted_stay(e):
+    t = couch(e)
+    for _ in range(9):
+        send(e, "B", "follow up", thread=t)
+    runs = len(e.rows("runs"))
+    send(e, "B", "", kind="close", thread=t)
+    assert "closed" not in e.rows("threads")[t]["flags"]
+    send(e, "B", stay(t), thread=t)
+    assert "settled" in e.rows("threads")[t]["flags"]
+    assert len(e.rows("runs")) == runs == 10

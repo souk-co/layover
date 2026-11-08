@@ -66,6 +66,27 @@ def compact_source(source):
                  for line in range(token.start[0], token.end[0] + 1)}
     result = "\n".join(line if i in protected else re.sub(r"^ +", lambda m: " " * (len(m[0]) // 4), line)
                        for i, line in enumerate(formatted.splitlines(), 1))
+    # Join adjacent single-line simple statements, saving repeated indentation under the file cap.
+    simple = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise, ast.Assert, ast.Import, ast.ImportFrom, ast.Pass, ast.Break, ast.Continue, ast.Delete)
+    eligible = {n.lineno for n in ast.walk(ast.parse(result)) if isinstance(n, simple) and n.lineno == n.end_lineno}
+    rows, previous = [], None
+    for i, line in enumerate(result.splitlines(), 1):
+        indent = len(line) - len(line.lstrip())
+        if i in eligible and previous == indent:
+            rows[-1] += ";" + line.lstrip()
+        elif line or i in protected:
+            rows.append(line)
+        previous = indent if i in eligible else None
+    result = "\n".join(rows)
+    rows = result.splitlines()
+    bodies = {body[0].lineno for n in ast.walk(ast.parse(result))
+              if isinstance(n, (ast.If, ast.For, ast.While, ast.With, ast.FunctionDef, ast.Try, ast.ExceptHandler))
+              for body in (getattr(n, "body", []), getattr(n, "orelse", []), getattr(n, "finalbody", [])) if body
+              if all(isinstance(b, simple) and b.lineno == b.end_lineno == body[0].lineno for b in body)
+              and rows[body[0].lineno - 2].endswith(":")}
+    for i in sorted(bodies, reverse=True):
+        rows[i - 2] += rows.pop(i - 1).lstrip()
+    result = "\n".join(rows)
     assert ast.dump(ast.parse(result)) == ast.dump(ast.parse(source))
     return result
 

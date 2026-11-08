@@ -79,13 +79,20 @@ COUCH_MAX_MINUTES = 60  # a broker grant lasts at most an hour
 SESSION = re.compile(r"^stay\s+(\{.*\})\s*$", re.S)
 STARTER = 50  # credits a new buyer gets from the sponsors' starter pot ($0.50)
 STARTER_POOL = "starter"
+BURST, WINDOW = 10, 600
 REFERENCE_CHARS = 280
 IPV4 = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 
 
 def on_event(e, s):
     try:
-        return handle(e, s)
+        out = handle(e, s)
+        if isinstance(e, Message) and any(a.kind == "run" for a in out):
+            left, at = bucket(s, e.sender.person, e.at)
+            if left < 1:
+                return [limited(e, s)]
+            return [store(dict(limit=[e.sender.person, left - 1, at]), resident=True, sealed=("limit",)), *out]
+        return out
     except (ValueError, KeyError) as error:
         if not isinstance(e, Message) or (e.thread is None and e.kind == "message"):
             raise
@@ -108,6 +115,11 @@ def handle(e, s):
     if isinstance(e, ToolDone) and e.tool == "credits.pay" and e.origin == "program" and e.args.get("pool") == STARTER_POOL:
         return starter_notice(e)
     m = isinstance(e, Message) and e.kind
+    if m == "limits":
+        # The host automatically joins the creator first; roles can be delegated to anyone.
+        if e.sender.person != list(s.snapshot["members"])[0]:
+            return [reply(e.sender, "Creator only.")]
+        return [reply(e.sender, json.dumps({p: dict(open=opens(s, p), tokens=bucket(s, p, e.at)[0]) for p in s.snapshot["members"]}))]
     if m == "fund":
         if "arbiter" not in e.sender.roles:
             return [reply(e.sender, "Only an arbiter funds the starter pot.")]
@@ -134,6 +146,11 @@ def handle(e, s):
     if isinstance(e, RunFinished):
         return clear(t, "polling")
     wf, k = isinstance(e, ToolDone) and e.tool == "runtime.web_fetch", t.data["kind"]
+    if isinstance(e, Message):
+        if e.kind == "close" and e.sender.person == t.opener:
+            return [reply(e.sender, "Finish or withdraw.")] if any(t.flag(f) for f in ("accepted", "agreed", "enrolled")) else [t.set_flag("closed"), post(t, "Request closed.")]
+        if t.flag("closed"):
+            return [reply(e.sender, "Request closed.")]
     if t.data.get("allocate") and t.flag("closed"):
         return []
     if t.data.get("allocate") and not t.flag("accepted") and not t.flag("agreed") and not t.flag("closed"):
@@ -406,6 +423,8 @@ def top_level(e, s):
         return []
     if need not in e.sender.roles:
         return [reply(e.sender, f"A {e.kind} message needs the {need} role.")]
+    if opens(s, e.sender.person) >= 3 or bucket(s, e.sender.person, e.at)[0] < 1:
+        return [limited(e, s)]
     d = json.loads(e.text)
     if e.kind == "allocate":
         if set(d) != {"operation_id", "domains", "category", "minutes", "max_price", "exclusive", "pay", "auto_accept"} or d["auto_accept"] is not True or d["exclusive"] is not False or d["pay"] != "escrow" or d["category"] not in FETCH_CATEGORIES or d["minutes"] != 5 or nat(d["max_price"]) < 1:
@@ -423,6 +442,21 @@ def top_level(e, s):
     else:
         data = dict(kind="lease", request=lease_request(d))
     return [open_thread(e, members=[e.sender], data=data)]
+
+
+def opens(s, member):
+    return sum(t["opener"] == member and not set(t["flags"]) & {"closed", "settled", "enrolled"} for t in s.snapshot["threads"].values())
+
+
+def bucket(s, member, now):
+    # Sealed program records: [member, remaining tokens, refill timestamp].
+    x = next((r["limit"] for r in reversed(s.resident_fields("limit")) if r.get("limit", [None])[0] == member), [member, BURST, now])
+    at = max(now, x[2])
+    return min(BURST, x[1] + (at - x[2]) * BURST / WINDOW), at
+
+
+def limited(e, s):
+    return reply(e.sender, f"You have {opens(s, e.sender.person)} open requests; wait for replies or close one")
 
 
 def uuid(v):

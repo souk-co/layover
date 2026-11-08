@@ -3,6 +3,13 @@
 Work in a branch and open a pull request against `main`. Keep each PR focused
 on one concern and small enough to read in one sitting.
 
+## How work is organized
+
+Issues are grouped into milestones, each with a definition of success. Decisions
+that are hard to reverse or likely to be relitigated go in an [ADR](docs/adr/).
+Anything that moves money or decides who sees private data gets a test that fails
+when it breaks. The amin’s promises live in `amin/INTENTIONS.md`.
+
 ## Review
 
 Every PR that touches the guest, custody, payments or the amin needs a

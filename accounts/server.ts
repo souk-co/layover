@@ -1,3 +1,4 @@
+import { normalizeStarterEmail, starterCap } from "./starter.ts";
 // Layover accounts: an attested webhost service that holds one wallet per email and spends it only as that email asks.
 // Wallet keys are derived inside the TEE from the project's dstack GetKey seed (ctx.env.ACCOUNTS_SEED, manifest dstack_env)
 // and the email; they are never stored and leave only through POST /export. The service signs EIP-3009 and EIP-712
@@ -61,9 +62,9 @@ export const relayer = (env: Ctx["env"]) => derive(env, "relayer");
 export const admissionSigner = (env: Ctx["env"]) => derive(env, "lease-admission/1");
 
 function cfg(env: Ctx["env"]) {
-  for (const k of ["RPC", "TOKEN", "ESCROW", "SOUK_URL", "SOUK_ID", "CHAIN_ID", "POT_KEY", "STARTER", "STARTERS_PER_DAY", "RELAYS_PER_DAY"]) must(env[k], `${k} is not set in this deploy`);
+  for (const k of ["RPC", "TOKEN", "ESCROW", "SOUK_URL", "SOUK_ID", "CHAIN_ID", "POT_KEY", "STARTER", "RELAYS_PER_DAY"]) must(env[k], `${k} is not set in this deploy`);
   return { rpc: env.RPC, token: env.TOKEN, escrow: env.ESCROW, souk: env.SOUK_URL.replace(/\/$/, ""), soukId: env.SOUK_ID, chainId: BigInt(env.CHAIN_ID),
-    starter: BigInt(env.STARTER), startersPerDay: Number(env.STARTERS_PER_DAY), relaysPerDay: Number(env.RELAYS_PER_DAY) };
+    starter: BigInt(env.STARTER), startersPerDay: starterCap(env.STARTERS_PER_DAY, 200), startersPerDomainPerDay: starterCap(env.STARTERS_PER_DOMAIN_PER_DAY, 20), relaysPerDay: Number(env.RELAYS_PER_DAY) };
 }
 
 // sepolia.base.org sometimes answers a read with result null; one null is never taken as an answer. These methods always
@@ -176,11 +177,11 @@ async function souk(c: Rec, path: string, body: Rec, token?: string) {
   return j;
 }
 
-async function startChallenge(c: Rec, email: string, purpose: "login" | "export") {
-  const { challenge_id } = await souk(c, "/api/auth/code", { email });
+async function startChallenge(c: Rec, email: string, purpose: "login" | "export", deliveryEmail = email) {
+  const { challenge_id } = await souk(c, "/api/auth/code", { email: deliveryEmail });
   for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k);
   challenges.set(challenge_id, { email, exp: Date.now() + CHALLENGE_MS, purpose });
-  return { challenge_id, code_sent_to: email, next: purpose === "login" ? "POST /verify {challenge_id, code} with the code from that email" : "POST /export {confirm, challenge_id, code} with the code from that email" };
+  return { challenge_id, code_sent_to: deliveryEmail, next: purpose === "login" ? "POST /verify {challenge_id, code} with the code from that email" : "POST /export {confirm, challenge_id, code} with the code from that email" };
 }
 // Souk Dev and Staging accept 000000 for any address (SOUK_TEST_SIGNIN_CODE); a mailed code is never 000000.
 // Past the souk's mail limits (5 codes an hour per address, 300 host-wide) Dev sets the code to 000000 and mails nothing,
@@ -195,17 +196,19 @@ async function checkCode(c: Rec, body: Rec, purpose: string, email?: string) {
 }
 
 // Starter credit: once per souk person (not per mailbox string), only for members of the IP souk (so the doorman's signup limits apply), from the pot,
-// at most STARTERS_PER_DAY per UTC day. Checks and records are serialized, and the record is written before the transfer,
+// at most STARTERS_PER_DAY globally and STARTERS_PER_DOMAIN_PER_DAY per normalized domain per UTC day. Checks and records are serialized, and the record is written before the transfer,
 // so a crash can lose a starter payment but never pay one twice.
 let starters: Promise<unknown> = Promise.resolve();
 function starter(c: Rec, ctx: Ctx, person: string, email: string, to: string, soukToken: string) {
   const decided = starters.then(async () => {
     const rows = (await ledger(ctx)).filter((r) => r.kind === "starter"), today = new Date().toISOString().slice(0, 10);
-    if (rows.some((r) => r.person === person || r.email === email)) return null;
+    const normalized = normalizeStarterEmail(email), domain = normalized.split("@")[1];
+    if (rows.some((r) => r.person === person || normalizeStarterEmail(r.email) === normalized)) return null;
     const member = (await souk(c, "/api/souk_list", {}, soukToken)).some((x: Rec) => x.souk_id === c.soukId);
     if (!member) return { skipped: "not a member of the IP souk: sign up at the Layover site first, then sign in again" };
     if (rows.filter((r) => r.at.startsWith(today)).length >= c.startersPerDay) return { skipped: `starter limit (${c.startersPerDay} a day) reached; try tomorrow` };
-    await append(ctx, { kind: "starter", person, email, to, amount: String(c.starter) });
+    if (rows.filter((r) => r.at.startsWith(today) && normalizeStarterEmail(r.email).split("@")[1] === domain).length >= c.startersPerDomainPerDay) return { skipped: `starter domain limit (${c.startersPerDomainPerDay} a day) reached; try tomorrow` };
+    await append(ctx, { kind: "starter", person, email, normalized_email: normalized, to, amount: String(c.starter) });
     return "pay";
   });
   starters = decided.catch(() => {});
@@ -276,12 +279,12 @@ async function api(req: Request, path: string, ctx: Ctx) {
   if (path === "/info") {
     const [r, pot] = [await relayer(ctx.env), new Wallet(ctx.env.POT_KEY).address];
     return { admission_signer: (await admissionSigner(ctx.env)).address, relayer: r.address, relayer_eth_wei: String(BigInt(await rpc(c.rpc, "eth_getBalance", [r.address, "latest"]))), pot,
-      pot_layc: String((await call(c, c.token, "balanceOf", [pot]))[0]), token: c.token, escrow: c.escrow, chain_id: String(c.chainId), starter: String(c.starter), souk: c.souk };
+      pot_layc: String((await call(c, c.token, "balanceOf", [pot]))[0]), token: c.token, escrow: c.escrow, chain_id: String(c.chainId), starter: String(c.starter), starters_per_day: c.startersPerDay, starters_per_domain_per_day: c.startersPerDomainPerDay, souk: c.souk };
   }
   if (path === "/login") {
     const email = normalize(String(body.email));
     must(email.length <= 254 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email), "email: an email address");
-    return await startChallenge(c, email, "login");
+    return await startChallenge(c, email, "login", body.email.trim());
   }
   if (path === "/verify") {
     const { ch, token, person } = await checkCode(c, body, "login");

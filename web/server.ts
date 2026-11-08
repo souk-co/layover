@@ -1,7 +1,10 @@
+import testMailboxes from "./signup-test-mailboxes.json" with { type: "json" };
+import { normalizeStarterEmail, starterCap } from "./starter.ts";
 // resip staging site, in its own webhost container: append-only JSON records in ctx.dataDir/records.jsonl, plus an in-memory ciphertext relay for
 // proxy streams. The webhost strips /resip-staging.
 import { agentBinding, Bad, binding, canonical, facts, hex, sha256, unhex, verify } from "./verify.ts";
 import { seal } from "./static/common.js";
+import { activity } from "./activity.ts";
 import { publicRegions } from "./region.ts";
 import { operatorsOf } from "./owners.ts";
 import { checkGuestKey } from "./guest-key.ts";
@@ -314,6 +317,17 @@ const cardOf = (host?: Rec) => {
     return { card_error: e.message };
   }
 };
+const slotAnswers = new Map<string, { at: number; p: Promise<Rec[]> }>();
+function cachedSlots(ctx: Ctx) {
+  const hit = slotAnswers.get(ctx.dataDir);
+  if (hit && Date.now() - hit.at < cfg.chainCacheMs) return hit.p;
+  const p = couchSlots();
+  const entry = { at: Infinity, p };
+  slotAnswers.set(ctx.dataDir, entry);
+  p.then(() => { entry.at = Date.now(); }, () => {});
+  p.catch(() => { if (slotAnswers.get(ctx.dataDir)?.p === p) slotAnswers.delete(ctx.dataDir); });
+  return p;
+}
 async function couchSlots() {
   const fleet = await upstream("broker /fleet", BROKER_FLEET, 15000);
   for (const m of fleet) {
@@ -861,7 +875,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
   if (path === "/api/minion/rows" && req.method === "GET") {
     return minionRows(rs).filter((r) => !url.searchParams.get("agent_id") || r.agent_id === url.searchParams.get("agent_id"));
   }
-  if (path === "/api/couch-slots" && req.method === "GET") return await couchSlots();
+  if (path === "/api/couch-slots" && req.method === "GET") return await cachedSlots(ctx);
   if (path === "/api/broker-network" && req.method === "GET") return await upstream("broker /network", BROKER_NETWORK, 15000);
   if (path === "/api/stats/history" && req.method === "GET") return (await history(ctx)).filter((r) => Date.parse(r.t) > Date.now() - HISTORY_KEEP_MS);
   if (path === "/api/market" && req.method === "GET") return await cached("market " + ctx.dataDir, () => market(ctx, agents, appraisals, leases, bounties, probeRequests, probes));
@@ -883,7 +897,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
     return { agents: as.length, bounties: bs.length, accepted: sum("accepted"), declined: sum("declined"), done: sum("done"), expired: sum("expired"), by_isp_class: by,
       leases: { requested: ls.length, active: ls.filter((l) => l.status === "active").length, ended: ls.filter((l) => l.status === "ended").length, declined: ls.filter((l) => l.status === "declined").length,
         open: ls.filter((l) => l.status === "open").length, settled_cents: ls.filter((l) => l.status === "ended").reduce((n, l) => n + l.charged, 0) },
-      excluded_test_agents: agents.size - as.length };
+      starter_signups: await starterStats(ctx), excluded_test_agents: agents.size - as.length };
   }
   return null;
 }
@@ -893,11 +907,40 @@ async function api(req: Request, path: string, ctx: Ctx) {
 // The souk's program pays a new buyer starter credit from the sponsors' pot when they first sign in.
 export const SOUK_URL = "https://souk-dev.dstack.soc1024.com", SOUK_ID = "31f5c141-fb2d-4572-939a-68543a2d0649";
 export const SIGNUP_LIMITS = { email: { n: 3, ms: 24 * HOUR }, ip: { n: 300, ms: HOUR } };
+// Explicit deploy configuration; only mailbox limits are waived. IP and daily caps still apply.
+const signupTestMailboxes = new Set(testMailboxes.map(normalizeStarterEmail));
 const signups = { email: new Map<string, number[]>(), ip: new Map<string, number[]>() };
 function limit(kind: "email" | "ip", key: string) {
   const { n, ms } = SIGNUP_LIMITS[kind], now = Date.now(), recent = (signups[kind].get(key) ?? []).filter((t) => t > now - ms);
   if (recent.length >= n) throw new Limited(`signup limit: ${n} per ${ms / HOUR} h per ${kind}; try again later`);
   signups[kind].set(key, [...recent, now]);
+}
+// Serialize durable reservations before inviting. Failed/uncertain invites consume capacity,
+// since an upstream timeout may still have admitted the buyer. No raw emails enter the log.
+let signupLane: Promise<unknown> = Promise.resolve();
+const signupCaps = (ctx: Ctx) => ({ global: starterCap(ctx.env?.STARTERS_PER_DAY, 200), per_domain: starterCap(ctx.env?.STARTERS_PER_DOMAIN_PER_DAY, 20) });
+async function starterStats(ctx: Ctx) {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = (await records(ctx)).filter((r) => r.kind === "starter_signup" && r.at.startsWith(today));
+  return { ...signupCaps(ctx), used_today: rows.length, day: today, test_mailboxes: signupTestMailboxes.size };
+}
+function reserveSignup(ctx: Ctx, email: string, role: string) {
+  const decision = signupLane.then(async () => {
+    const normalized = normalizeStarterEmail(email), domain = normalized.split("@")[1];
+    const digest = async (s: string) => hex(await sha256(new TextEncoder().encode(s)));
+    const email_key = await digest(normalized), domain_key = await digest(domain);
+    const rows = (await records(ctx)).filter((r) => r.kind === "starter_signup" || r.kind === "host_signup");
+    if (!signupTestMailboxes.has(normalized) && rows.some((r) => r.email_key === email_key && r.role === role)) throw new Limited("signup limit: this mailbox has already been invited for this role");
+    if (role === "buyer") {
+      const today = new Date().toISOString().slice(0, 10), caps = signupCaps(ctx);
+      const daily = rows.filter((r) => r.kind === "starter_signup" && r.at.startsWith(today));
+      if (daily.length >= caps.global) throw new Limited("signup limit: daily starter cap reached");
+      if (daily.filter((r) => r.domain_key === domain_key).length >= caps.per_domain) throw new Limited("signup limit: daily domain starter cap reached");
+    }
+    await append(ctx, { kind: role === "buyer" ? "starter_signup" : "host_signup", email_key, domain_key, role });
+  });
+  signupLane = decision.catch(() => {});
+  return decision;
 }
 async function signup(req: Request, ctx: Ctx) {
   must(req.method === "POST", "POST required");
@@ -909,10 +952,12 @@ async function signup(req: Request, ctx: Ctx) {
   // The webhost strips client-address headers unless its TRUSTED_PROXY_IPS names the front proxy, so without one every
   // request shares the "unattributed" bucket and the per-IP limit is a global one. The address is never written down.
   limit("ip", req.headers.get("x-real-ip") ?? "unattributed");
-  limit("email", email.trim().toLowerCase());
+  if (!signupTestMailboxes.has(normalizeStarterEmail(email))) limit("email", normalizeStarterEmail(email));
+  await reserveSignup(ctx, email, role);
   // souk-dev takes 6-15 s to answer an invite.
   const event = await upstream("souk invite", SOUK_URL + "/api/souk_invite", 60000, { method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" },
     body: JSON.stringify({ souk_id: SOUK_ID, email_or_person: email.trim(), roles: [role] }) });
+  await append(ctx, { kind: "signup" }); // Count only; never persist contact details.
   return { invited: email.trim(), role, souk_id: SOUK_ID, event,
     next: `In the kit directory K, run \`python3 $K/account.py login ${email.trim()}\`; it mails a sign-in code. Ask your principal for the code and run the same command with the code appended. That signs them in to their Layover account and to the souk and pays the account's starter LAYC; then \`python3 $K/souk.py list\` shows the IP souk.${role === "buyer" ? " A new buyer is also paid souk starter credit at first sign-in." : ""}` };
 }
@@ -981,8 +1026,9 @@ function cached<T>(key: string, f: () => Promise<T>): Promise<T> {
   if (hit && Date.now() - hit.at < cfg.chainCacheMs) return hit.p as Promise<T>;
   const p = chainLock.catch(() => {}).then(f);
   chainLock = p;
-  answers.set(key, { at: Date.now(), p });
-  p.catch(() => answers.delete(key));
+  const entry = { at: Infinity, p };
+  answers.set(key, entry);
+  p.then(() => { entry.at = Date.now(); }, () => { if (answers.get(key) === entry) answers.delete(key); });
   return p;
 }
 async function scanClaims(ctx: Ctx) {
@@ -1008,6 +1054,51 @@ async function scanClaims(ctx: Ctx) {
   claims.recent = claims.recent.slice(-50);
   return { since: claims.since, scanned_to: claims.scanned_to, missed_blocks: claims.missed_blocks };
 }
+// ABI topics from the origin GuestEscrow fixture. Only verified layover-chain logs are used.
+export const ACTIVITY_TOPICS: Record<string, string> = {
+  "0x2da466a7b24304f47e87fa2e1e5a81b9831ce54fec19055ce277ca2f39ba42c4": "deposit",
+  "0x65f658cabb03ca311acb4c4795234c11045d3a8ac4356a37e109f519244350d5": "accept",
+  [GUEST_CLAIMED]: "Claimed",
+  "0x45daf3cb34d9f2cad28dd896eb772bb5066cfeab0bb395c494a5ebd524cbcf26": "close",
+  "0xd1c19fbcd4551a5edfb66d43d2e337c04837afda3482b42bdf569a8fccdae5fb": "withdraw",
+};
+const activityRefresh = new Map<string, { pending: boolean; after: number }>();
+function refreshActivity(ctx: Ctx) {
+  const old = activityRefresh.get(ctx.dataDir);
+  if (old && (old.pending || Date.now() < old.after)) return;
+  const entry = { pending: true, after: 0 };
+  activityRefresh.set(ctx.dataDir, entry);
+  void scanActivity(ctx).catch(() => {}).finally(() => { entry.pending = false; entry.after = Date.now() + 10000; });
+}
+export async function scanActivity(ctx: Ctx) {
+  const rs = await records(ctx), cursor = rs.filter(r => r.kind === "activity_cursor").at(-1)?.block;
+  const { head } = await chain("/head", {});
+  const known = new Set(rs.filter(r => r.kind === "escrow_activity").map(r => r.key));
+  // Same bounded lookback as the existing Claimed index; missed history cannot be recovered by this reader.
+  for (let from = Math.max((cursor ?? -Infinity) + 1, head - INDEX_MAX + 1); from <= head; from += LOG_SPAN) {
+    const to = Math.min(head, from + LOG_SPAN - 1);
+    for (const escrow of ESCROWS) {
+      const topics = escrow.contract === "guest_escrow" ? ACTIVITY_TOPICS : {
+        ...Object.fromEntries(Object.entries(ACTIVITY_TOPICS).filter(([, event]) => !["Claimed", "withdraw"].includes(event))),
+        [CLAIMED]: "Claimed",
+        "0x7084f5476618d8e60b11ef0d7d3f06914655adb8793e28ff7f018d4c76d505d5": "withdraw",
+      };
+      for (const [topic, event] of Object.entries(topics)) {
+        const { logs } = await chain("/logs", { address: escrow.address, topics: topic, from: String(from), to: String(to) });
+        for (const l of logs) {
+          const key = [escrow.address, l.tx, topic, l.log_index ?? l.logIndex ?? l.data, ...(l.topics ?? [])].join(":");
+          if (known.has(key)) continue;
+          // Older chain readers omit event timestamps. In that case time is first observation, not an invented block time.
+          const stamp = l.block_timestamp ?? l.timestamp;
+          const time = typeof stamp === "number" ? new Date(stamp * 1000).toISOString() : undefined;
+          await append(ctx, { kind: "escrow_activity", key, event, tx: l.tx, block: l.block, ...(time ? { time } : {}) });
+          known.add(key);
+        }
+      }
+    }
+    await append(ctx, { kind: "activity_cursor", block: to });
+  }
+}
 async function escrow(ctx: Ctx) {
   // The three serial reads share one deadline, RPC_READ_MS from now: they hold chainLock, and /api/market queues behind them.
   const until = Date.now() + RPC_READ_MS;
@@ -1028,7 +1119,7 @@ async function escrow(ctx: Ctx) {
 const real = (id: string) => !id.startsWith("test-");
 async function market(ctx: Ctx, agents: Map<string, Rec>, appraisals: Map<string, Rec>, leases: Map<string, Rec>, bounties: Map<string, Rec>, probeRequests: Map<string, Rec>, probes: Map<string, Rec>) {
   const index = await scanClaims(ctx), rs = await records(ctx);
-  const slots = await couchSlots(), hosts: Record<string, Rec> = {};
+  const slots = await cachedSlots(ctx), hosts: Record<string, Rec> = {};
   const host = (a: string) => hosts[a] ??= { chip: null, online: null, slots: 0, ready: 0, claims: {} };
   const tally = (a: string, e: string) => host(a).claims[e] ??= { pairs: 0, paid: "0", recent: 0, last_block: null, ...(e === "escrow" ? { last_period: null } : {}) };
   for (const s of slots) {
@@ -1133,6 +1224,12 @@ export async function handler(req: Request, ctx: Ctx) {
   const path = new URL(req.url).pathname;
   if (path.startsWith("/api/")) {
     try {
+      if (path === "/api/activity") {
+        must(req.method === "GET", "GET required");
+        // Refresh in the background: a slow chain reader must not stall the dashboard.
+        refreshActivity(ctx);
+        return Response.json(await publicResponse(activity(await records(ctx)), ctx), { headers: { "cache-control": "no-store" } });
+      }
       if (path.startsWith("/api/console/")) return Response.json(await consoleApi(req, path, ctx), { headers: { "cache-control": "no-store" } });
       if (path === "/api/signup") return Response.json(await signup(req, ctx), { headers: { "cache-control": "no-store" } });
       if (path === "/api/status/souk-dev") return Response.json(await soukDev(), { headers: { "cache-control": "no-store" } });
@@ -1165,11 +1262,21 @@ export async function handler(req: Request, ctx: Ctx) {
 }
 export default handler;
 
+// Start both reads without holding up the listener. Use the API path so verification
+// and chain indexing populate exactly the caches that the first buyer will read.
+export async function warmCaches(ctx: Ctx) {
+  await Promise.all(["couch-slots", "market"].map(async (name) => {
+    try { await api(new Request("http://startup/api/" + name), "/api/" + name, ctx); }
+    catch (e) { console.error(name + " startup warm-up failed", e); }
+  }));
+}
+
 if (import.meta.main) {
   const [port, dataDir] = Deno.args;
   // The dashboard's minute series samples on a timer, so history accrues with or without traffic (tests import this module
   // and call sampleHistory themselves; a request-hook would fetch the broker from every test's handler call).
   setInterval(() => sampleSoon({ dataDir, env: Deno.env.toObject() }), HISTORY_EVERY_MS);
+  void warmCaches({ dataDir, env: Deno.env.toObject() });
   Deno.serve({ port: Number(port) }, (req) => handler(req, { dataDir, env: Deno.env.toObject() }));
 }
 

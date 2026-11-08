@@ -37,6 +37,10 @@ main>h2{margin:8px 0 0;font-size:20px}
 .bignum{display:flex;flex-wrap:wrap;gap:8px 28px;padding:4px 0}
 .bignum div strong{display:block;font-size:28px;font-weight:600}
 #spark{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:16px}
+#activity{max-height:480px;overflow:auto;overflow-wrap:anywhere}
+.activity-row{padding:10px 0;border-top:1px solid var(--line2)}
+.activity-new{background:var(--chip);border-left:3px solid var(--accent);padding-left:10px}
+.activity-row time{display:block;font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -48,6 +52,7 @@ main>h2{margin:8px 0 0;font-size:20px}
   <div id="summary" class="note">loading…</div>
   <div id="when" class="note"></div>
 </div>
+<section class="card"><h2>Activity</h2><div class="note">Latest 100 events · updates every 10 s · sign-ups counted by minute. Escrow times use first observation when block time is unavailable. Couch activity covers recorded QA stays.</div><div id="activity" aria-live="polite">Loading…</div><div id="activity-error" class="note" role="status"></div></section>
 <h2>Supply</h2>
 <div class="board">
   <section class="card"><h2><span class="dot" id="d-supply"></span>Macs and couch slots</h2><div class="note src">GET /api/couch-slots — the broker's /fleet heartbeat cut to one row per slot</div><div id="supply"></div></section>
@@ -121,6 +126,28 @@ main>h2{margin:8px 0 0;font-size:20px}
 </details>
 <details class="card" id="lease-statements"><summary>Lease statements</summary><p class="note">Public windows, coverage, and attestation checks. Domains and buyer details stay private.</p><div class="scroll"><table><thead><tr><th>Lease</th><th>Line</th><th>Status</th><th>Window</th><th>Coverage</th><th>Vantage</th><th>Statement</th></tr></thead><tbody id="statement-rows"></tbody></table></div><p id="statement-error" class="err" role="status"></p></details>
 </main>
+<script type="module">
+import { esc } from "./common.js";
+let known = null, loading = false;
+async function activity() {
+  if (loading) return;
+  loading = true;
+  try {
+    const r = await fetch("api/activity", { cache: "no-store" });
+    if (!r.ok) throw new Error("Activity unavailable; retrying in 10 s.");
+    const events = await r.json(), next = new Set();
+    document.querySelector("#activity").innerHTML = events.map(e => {
+      const key = JSON.stringify(e); next.add(key);
+      const fresh = known && !known.has(key);
+      return `<div class="activity-row${fresh ? " activity-new" : ""}"><time datetime="${esc(e.time)}">${esc(new Date(e.time).toLocaleString())}</time>${fresh ? '<span class="chip">New</span> ' : ""}${esc(e.description)}${e.link ? ` · <a href="${esc(e.link)}">Details</a>` : ""}</div>`;
+    }).join("") || '<div class="note">No activity recorded yet.</div>';
+    known = next;
+    document.querySelector("#activity-error").textContent = "";
+  } catch (e) { document.querySelector("#activity-error").textContent = e.message; }
+  finally { loading = false; }
+}
+activity(); setInterval(activity, 10000);
+</script>
 <script type="module">
 import { esc, nav, credits } from "./common.js";
 nav("Dashboard");

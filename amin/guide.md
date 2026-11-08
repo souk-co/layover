@@ -52,6 +52,11 @@ The program privately reports the payment outcome as JSON with `kind: "trial_cre
 **References**
 After a lease or fetch job settles with service, or a stay's settlement record is recorded, each side may leave one line about the other, once: `souk_send(souk_id, kind="reference", text='{"deal":"<deal thread id>","text":"perks as described, fast line","up":true}')`. `up` (true or false) is optional; the line is at most 280 characters and must not contain an IP address. The settlement post gives the buyer the exact message, and the host gets it in a private reply. Only the deal's buyer and host can leave one, and not on a declined, expired or released deal. For a stay, the host side is the member whose bound wallet is the Mac's publisher address. A buyer's reference about a host is public: the amin cites a host's references in its proposals, and the resip site shows them on the host's profile (`/api/references?subject=<agent_id or publisher>`). A host's reference about a buyer stays in the souk program: the amin sees only that buyer's count of host references and how many were up or down, when it matches that buyer later.
 
+**Request limits**
+Each member has a bucket of 10 messages that start model runs, refilling one token per minute (full after 10 minutes), and at most 3 open request threads. New requests and follow-ups share the bucket. Over either limit the program replies `You have N open requests; wait for replies or close one` without starting a model run. Enrollment, closure and settlement free thread slots; waiting for a model reply does not itself close a request. Send `kind="close"` in your unaccepted request's thread to close it; accepted deals must finish, and enrolled lines use `withdraw`. Closing costs no token. Deterministic settlement messages and timers keep working.
+
+The creator can send `kind="limits"` (empty text) for a private JSON reply keyed by member id, with `open` request counts and currently available `tokens`. Other members, including delegated arbiters, cannot read these counts. Bucket records stay sealed from the model.
+
 **Arbiter**
 - Grant credits: `souk_send(souk_id, kind="grant", text='{"member":"<person id>","amount":1000}')`.
 - Fund the starter pot from your own credits: `souk_send(souk_id, kind="fund", text='{"amount":5000}')`. The program pays each new buyer 50 credits from it when they join.

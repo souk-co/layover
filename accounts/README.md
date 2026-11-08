@@ -181,3 +181,11 @@ Never replace the TEE seed with a generated local seed or copy redacted admin-AP
 A repeated authenticated `/api/close` for terms already closed by that wallet returns `already: true`, the confirmed
 `closed_at`, its original `claimable_until`, and `tx: null`. It does not consume another relay budget, write another close
 record, or submit another transaction. This lets clients reconcile a lost close response without reopening access.
+
+### Starter abuse identity and daily caps
+
+Starter eligibility uses trimmed, NFC-normalized lowercase email with +tags removed, plus dot removal for gmail.com and googlemail.com (both share gmail.com). Historical ledger email fields are normalized on read too, so upgrading does not make old aliases eligible again. Person IDs remain an additional duplicate guard. Wallet derivation and session identity retain their existing behavior to preserve access to existing balances; mailed login codes go to the address typed by the user.
+
+`STARTERS_PER_DAY` defaults to 200 and `STARTERS_PER_DOMAIN_PER_DAY` to 20. Both accept non-negative safe integers; zero disables grants at that scope. The serialized, durable pre-transfer ledger reservation enforces both UTC-day caps even for concurrent verification requests. A cap rejection writes no starter row, so a newcomer can try again tomorrow. `/api/info` exposes both configured caps. The web doorman exposes its independent signup caps and usage at `/api/stats`.
+
+The amin still pays souk starter credit on Joined. Deferring to accepted quotes needs durable once-per-person state and payment-result sequencing before credits.hold (including failed/unknown payment outcomes); this is deferred rather than changing the acceptance lifecycle here.

@@ -264,3 +264,25 @@ Deno.test({
     } finally { await s.close(); }
   },
 });
+
+Deno.test("starter aliases with distinct persons, historical ledger, domain and global caps", async () => {
+  const s = await setup();
+  Object.assign(s.ctx.env, { STARTERS_PER_DAY: "3", STARTERS_PER_DOMAIN_PER_DAY: "2" });
+  try {
+    await Deno.writeTextFile(s.ctx.dataDir + "/ledger.jsonl", JSON.stringify({ kind: "starter", person: "historical-person", email: "Old.Name+old@googlemail.com", at: "2020-01-01T00:00:00.000Z" }) + "\n");
+    assertEquals((await signIn(s, "oldname@gmail.com")).starter, null);
+    const first = await signIn(s, "First.Name+one@Gmail.com");
+    assert(first.starter.tx);
+    assertEquals(first.souk.person, "p-First.Name+one@Gmail.com", "the souk mails the typed address");
+    // Distinct souk persons and wallets must still share the starter identity.
+    assertEquals((await signIn(s, "firstname+two@googlemail.com")).starter, null);
+    const pair = await Promise.all([signIn(s, "second@gmail.com"), signIn(s, "third@googlemail.com")]);
+    assertEquals(pair.filter((v) => v.starter?.tx).length, 1);
+    assert(pair.some((v) => v.starter?.skipped?.includes("domain limit")));
+    assert((await signIn(s, "last@example.net")).starter.tx);
+    assert((await signIn(s, "over@example.org")).starter.skipped.includes("starter limit"));
+    assertEquals((await ledgerRows(s)).filter((r) => r.kind === "starter").length, 4);
+    // Legacy records have no normalized_email field; normalize on read as well.
+    assertEquals((await signIn(s, "first.name+legacy@gmail.com")).starter, null);
+  } finally { await s.close(); }
+});

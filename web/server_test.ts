@@ -1,6 +1,6 @@
 // deno test -A --no-check web/server_test.ts (verify.ts has pre-existing type errors)
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
-import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
+import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, warmCaches, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
 
 Deno.test("a probe request unanswered for 10 minutes after filing is expired, pass false; a newer one stays open", async () => {
   const dataDir = await Deno.makeTempDir(), ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -47,7 +47,7 @@ Deno.test("signup: invites the email with the doorman's credential, validates ro
     calls.push({ url, auth: new Headers(init.headers).get("authorization"), body: JSON.parse(init.body as string) });
     return reply.clone();
   }) as typeof fetch;
-  const env = { SOUK_DOORMAN_CREDENTIAL: "doorman-token" };
+  const env = { SOUK_DOORMAN_CREDENTIAL: "doorman-token", STARTERS_PER_DAY: "1000", STARTERS_PER_DOMAIN_PER_DAY: "1000" };
   const signup = (body: unknown, ip: string, e: Record<string, string> = env) =>
     handler(new Request("http://x/api/signup", { method: "POST", headers: { "x-real-ip": ip }, body: JSON.stringify(body) }), { dataDir, env: e });
   try {
@@ -68,7 +68,8 @@ Deno.test("signup: invites the email with the doorman's credential, validates ro
     assertEquals(calls.length, 2);
     await assertRejects(() => signup({ email: "x@example.com", role: "buyer" }, "ip-2", {}), Error, "SOUK_DOORMAN_CREDENTIAL");
 
-    for (let i = 1; i < SIGNUP_LIMITS.email.n; i++) assertEquals((await signup({ email: "New@example.com", role: "buyer" }, "ip-3")).status, 200);
+    // Aliases must be rejected before a second upstream invite.
+    assertEquals((await signup({ email: "New+tag@example.com", role: "buyer" }, "ip-3")).status, 429);
     const byEmail = await signup({ email: "new@example.com", role: "buyer" }, "ip-4");
     assertEquals([byEmail.status, (await byEmail.json()).error.startsWith("signup limit")], [429, true]);
 
@@ -866,4 +867,105 @@ Deno.test("static: public text hides addresses and emails while preserving commi
   const { publicText } = await import("./static/common.js");
   assertEquals(publicText("Contact owner@example.org at 192.0.2.3 or 2001:db8::1"), "Contact [email removed] at [address removed] or [address removed]");
   assertEquals(publicText("US · " + "a".repeat(64)), "US · " + "a".repeat(64));
+});
+
+Deno.test("startup warms market and couch slots before traffic and concurrent readers share the work", async () => {
+  const dataDir = await Deno.makeTempDir(), real = globalThis.fetch;
+  const seen: string[] = [], stub = chainStub(3_000_000, [], seen);
+  let fleetReads = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => release = resolve);
+  configure({ chainCacheMs: 60000 });
+  globalThis.fetch = (async (url: string) => {
+    if (url === BROKER_FLEET) { fleetReads++; await gate; return Response.json([]); }
+    return stub(new URL(url));
+  }) as typeof fetch;
+  try {
+    const warming = warmCaches({ dataDir });
+    const get = (name: string) => handler(new Request("http://x/api/" + name), { dataDir });
+    const slots = get("couch-slots");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assertEquals(fleetReads, 1);
+    release();
+    await warming;
+    assertEquals((await slots).status, 200);
+    const reads = seen.length;
+    assertEquals((await get("market")).status, 200);
+    assertEquals((await get("couch-slots")).status, 200);
+    assertEquals([fleetReads, seen.length], [1, reads]);
+  } finally {
+    release();
+    configure({ chainCacheMs: 0 });
+    globalThis.fetch = real;
+    await Deno.remove(dataDir, { recursive: true });
+  }
+});
+
+Deno.test("failed startup cache reads are logged and a later couch read can recover", async () => {
+  const dataDir = await Deno.makeTempDir(), real = globalThis.fetch, error = console.error;
+  const errors: string[] = [];
+  configure({ chainCacheMs: 60000 });
+  globalThis.fetch = (() => Promise.reject(new Error("upstream unavailable"))) as typeof fetch;
+  console.error = (message) => errors.push(String(message));
+  try {
+    await warmCaches({ dataDir });
+    assertEquals(errors.sort(), ["couch-slots startup warm-up failed", "market startup warm-up failed"]);
+    globalThis.fetch = (() => Promise.resolve(Response.json([]))) as typeof fetch;
+    assertEquals((await handler(new Request("http://x/api/couch-slots"), { dataDir })).status, 200);
+  } finally {
+    configure({ chainCacheMs: 0 });
+    globalThis.fetch = real;
+    console.error = error;
+    await Deno.remove(dataDir, { recursive: true });
+  }
+});
+
+Deno.test("starter signup caps: durable, serialized, buyer-only, private stats", async () => {
+  const dataDir = await Deno.makeTempDir(), env = { SOUK_DOORMAN_CREDENTIAL: "stub", STARTERS_PER_DAY: "3", STARTERS_PER_DOMAIN_PER_DAY: "2" };
+  const original = globalThis.fetch, delivered: string[] = [];
+  globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+    delivered.push(JSON.parse(init.body as string).email_or_person);
+    return Response.json({ event_id: 1 });
+  }) as typeof fetch;
+  const signup = (email: string, role = "buyer") => handler(new Request("http://x/api/signup", { method: "POST", body: JSON.stringify({ email, role }), headers: { "x-real-ip": "cap-test" } }), { dataDir, env });
+  try {
+    const digest = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))), (b) => b.toString(16).padStart(2, "0")).join("");
+    // Simulate a reservation loaded after restart; old days do not consume today's caps.
+    await Deno.writeTextFile(dataDir + "/records.jsonl", JSON.stringify({ kind: "starter_signup", role: "buyer", email_key: await digest("historical@example.net"), domain_key: await digest("example.net"), at: "2020-01-01T00:00:00.000Z" }) + "\n");
+    assertEquals((await signup("Historical+alias@example.net")).status, 429);
+    assertEquals((await signup("First.Name+tag@GoogleMail.com")).status, 200);
+    assertEquals(delivered, ["First.Name+tag@GoogleMail.com"]);
+    assertEquals((await signup("firstname@gmail.com")).status, 429);
+    const concurrent = await Promise.all([signup("second@gmail.com"), signup("third@googlemail.com")]);
+    assertEquals(concurrent.map((r) => r.status).sort(), [200, 429]);
+    assertEquals((await signup("last@example.net")).status, 200);
+    assertEquals((await signup("over@example.org")).status, 429);
+    assertEquals((await signup("host@gmail.com", "host")).status, 200);
+    const stats = await (await handler(new Request("http://x/api/stats"), { dataDir, env })).json();
+    assertEquals(stats.starter_signups.used_today, 3);
+    assertEquals(stats.starter_signups.global, 3);
+    assertEquals(stats.starter_signups.per_domain, 2);
+    const log = await Deno.readTextFile(dataDir + "/records.jsonl");
+    assertEquals(log.includes("@"), false);
+    // A durable reservation from a prior process also blocks aliases.
+    assertEquals((await signup("last+again@example.net")).status, 429);
+  } finally { globalThis.fetch = original; await Deno.remove(dataDir, { recursive: true }); }
+});
+
+Deno.test("explicit test mailbox repeats invitations but retains daily caps and private stats", async () => {
+  const dataDir = await Deno.makeTempDir(), original = globalThis.fetch;
+  const env = { SOUK_DOORMAN_CREDENTIAL: "stub", STARTERS_PER_DAY: "6", STARTERS_PER_DOMAIN_PER_DAY: "5" };
+  globalThis.fetch = (async () => Response.json({ event_id: 1 })) as typeof fetch;
+  const signup = (email: string) => handler(new Request("http://x/api/signup", { method: "POST", body: JSON.stringify({ email, role: "buyer" }), headers: { "x-real-ip": "test-mailbox-check" } }), { dataDir, env });
+  try {
+    // More than the rolling mailbox cap, with durable reservations for the same identity.
+    for (let i = 0; i < 5; i++) assertEquals((await signup(`souk-test+check-${i}@soc1024.com`)).status, 200);
+    assertEquals((await signup("souk-test+domain-cap@soc1024.com")).status, 429);
+    assertEquals((await signup("ordinary@example.org")).status, 200);
+    assertEquals((await signup("ordinary+alias@example.org")).status, 429);
+    assertEquals((await signup("different@example.net")).status, 429);
+    const stats = await (await handler(new Request("http://x/api/stats"), { dataDir, env })).json();
+    assertEquals(stats.starter_signups.test_mailboxes, 1);
+    assertEquals(stats.starter_signups.used_today, 6);
+    assertEquals(JSON.stringify(stats).includes("souk-test@"), false);
+  } finally { globalThis.fetch = original; await Deno.remove(dataDir, { recursive: true }); }
 });
