@@ -5,7 +5,7 @@ spends from it only when that email asks: it deposits LAYC into GuestEscrow, acc
 buyer's behalf, and withdraws LAYC out of the escrow and the wallet. The escrow contract still decides every payment. A buyer who wants their own
 wallet skips this service and calls the contracts directly; nothing here is in that path.
 
-Base Sepolia: GuestEscrow `0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA` (verifier `0xA609124be069225ee2af58741bc109F4bffAB6C3`; amiller/dsmack PR #90, `contracts/src/GuestEscrow.sol`), LAYC `0x9e851Bf5E3b613aaA09853A07D1132F49c90b515`.
+Base Sepolia: GuestEscrow `0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad` (verifier `0x954dfBd30FeD1402f087A1926d846Dd81a694ABE`; amiller/dsmack PR #90, `contracts/src/GuestEscrow.sol`), LAYC `0x9e851Bf5E3b613aaA09853A07D1132F49c90b515`.
 
 ## Keys
 
@@ -189,3 +189,24 @@ Starter eligibility uses trimmed, NFC-normalized lowercase email with +tags remo
 `STARTERS_PER_DAY` defaults to 200 and `STARTERS_PER_DOMAIN_PER_DAY` to 20. Both accept non-negative safe integers; zero disables grants at that scope. The serialized, durable pre-transfer ledger reservation enforces both UTC-day caps even for concurrent verification requests. A cap rejection writes no starter row, so a newcomer can try again tomorrow. `/api/info` exposes both configured caps. The web doorman exposes its independent signup caps and usage at `/api/stats`.
 
 The amin still pays souk starter credit on Joined. Deferring to accepted quotes needs durable once-per-person state and payment-result sequencing before credits.hold (including failed/unknown payment outcomes); this is deferred rather than changing the acceptance lifecycle here.
+
+## Previous GuestEscrow withdrawals
+
+The previous Base Sepolia escrow is `0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA`. Its deposits and terms stay there.
+Read them through layover-chain using `contract=guest_escrow_legacy`. Its original verifier and key directory remain
+allowlisted for existing pools. New deposits and terms use the current escrow above.
+
+A buyer can recover the previous balance with the wallet the account service exports. Run the kit's `account.py export EMAIL`,
+then `account.py export EMAIL CODE`; it writes `wallet.key` with mode 0600. Import that wallet into an encrypted
+Foundry account named `layover-previous` using `cast wallet import layover-previous --interactive`, then use the original contract directly. Fund that wallet with Base Sepolia ETH for gas:
+
+```sh
+OLD=0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA
+RPC=https://sepolia.base.org
+cast call "$OLD" 'withdrawable(address)(uint256)' "$BUYER" --rpc-url "$RPC"
+cast send "$OLD" 'closeTerms(bytes32)' "$TERMS_HASH" --account layover-previous --rpc-url "$RPC"
+# After the one-day claim grace, pass the closed terms hashes to release their exposure.
+cast send "$OLD" 'withdraw(uint256,bytes32[])' "$AMOUNT" "[$TERMS_HASH]" --account layover-previous --rpc-url "$RPC"
+```
+
+A withdrawal pays the wallet that signed it. Existing guest claims can still be sent to this original escrow.

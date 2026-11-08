@@ -126,7 +126,7 @@ async function assertion(proof, policy, enrollment, minCounter = 0) {
     eq(cat(key.x, key.y), enrollment.point.slice(1)),
     "chain enrollment key mismatch",
   );
-  require(await chain.category() === 3, "chain validation category");
+  require([3, 6].includes(await chain.category()), "chain validation category");
   await checkAssertion(a, chain, Date.now());
   require(
     hex(a.caller) === await hash(enc.encode("node")),

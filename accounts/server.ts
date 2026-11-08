@@ -9,7 +9,7 @@ import { normalizeStarterEmail, starterCap } from "./starter.ts";
 import { Wallet } from "npm:ethers@6.13.4/wallet";
 import { Transaction } from "npm:ethers@6.13.4/transaction";
 import { Interface } from "npm:ethers@6.13.4/abi";
-import { AdmissionError, authorizeLease, SITE } from "./lease_authorization.ts";
+import { AdmissionError, authorizeLease, SITE, guestEscrow } from "./lease_authorization.ts";
 import { registerArgs, RelayError } from "./guest_relay.ts";
 
 type Ctx = { dataDir: string; env: Record<string, string> };
@@ -221,7 +221,7 @@ async function balances(c: Rec, ctx: Ctx, email: string, address: string) {
     call(c, c.escrow, "deposits", [address]), call(c, c.escrow, "paid", [address]), call(c, c.escrow, "exposure", [address]), chainNow(c)]);
   const releasable: string[] = [];
   let exposure = raw as bigint;
-  for (const h of new Set((await ledger(ctx)).filter((r) => r.kind === "accept" && r.email === email).map((r) => r.termsHash as string))) {
+  for (const h of new Set((await ledger(ctx)).filter((r) => r.kind === "accept" && r.email === email && (r.escrow ?? "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea") === c.escrow.toLowerCase()).map((r) => r.termsHash as string))) {
     const [, cap, closedAt, released] = await call(c, c.escrow, "terms", [address, h]);
     if (closedAt && !released && now >= closedAt + BigInt(DAY / 1000)) { releasable.push(h); exposure -= BigInt(cap) - BigInt((await call(c, c.escrow, "totalClaimed", [address, h]))[0]); }
   }
@@ -241,7 +241,8 @@ async function siteGet(ctx: Ctx, path: string) {
 async function relayRegister(c: Rec, ctx: Ctx, agentId: string) {
   const [row] = await siteGet(ctx, "/api/agents?agent_id=" + encodeURIComponent(agentId));
   must(row?.guest_key, `agent ${agentId}: no published guest_key`);
-  must(row.guest_key.escrow === c.escrow.toLowerCase(), `agent ${agentId}: guest_key names escrow ${row.guest_key.escrow}`);
+  must(guestEscrow(row.guest_key.escrow) || row.guest_key.escrow === c.escrow.toLowerCase(), `agent ${agentId}: unknown guest escrow`);
+  c = { ...c, escrow: row.guest_key.escrow };
   const [op] = await call(c, c.escrow, "guestKeys", [row.guest_key.address]);
   if (op !== ZERO) return { agent_id: agentId, key: row.guest_key.address, operator: op, already: true };
   const t = await send(c, await relayer(ctx.env), c.escrow, "registerGuestKey", await registerArgs(row.guest_key));
@@ -256,7 +257,8 @@ async function relayClaim(c: Rec, ctx: Ctx, leaseId: string) {
   must(isAddr(g.escrow) && isAddr(g.buyer) && isAddr(g.key) && isAddr(g.operator) && /^0x[0-9a-f]{64}$/i.test(g.terms_hash) && /^0x[0-9a-f]{130}$/i.test(g.signature),
     `lease ${leaseId}: guest_claim is not {escrow, key, buyer, operator, terms_hash, cumulative_owed, signature}`);
   units(g.cumulative_owed, "guest_claim.cumulative_owed");
-  must(g.escrow.toLowerCase() === c.escrow.toLowerCase(), `lease ${leaseId}: guest_claim names escrow ${g.escrow}`);
+  must(guestEscrow(g.escrow.toLowerCase()) || g.escrow.toLowerCase() === c.escrow.toLowerCase(), `lease ${leaseId}: unknown guest escrow`);
+  c = { ...c, escrow: g.escrow.toLowerCase() };
   const [prev] = await call(c, c.escrow, "claimed", [g.buyer, g.terms_hash, g.key]);
   if (prev >= BigInt(g.cumulative_owed)) return { lease_id: leaseId, claimed: String(prev), already: true };
   const t = await send(c, await relayer(ctx.env), c.escrow, "claim", [g.buyer, g.terms_hash, g.cumulative_owed, g.signature]);
@@ -274,7 +276,8 @@ async function relaySweep(c: Rec, ctx: Ctx) {
 }
 
 async function api(req: Request, path: string, ctx: Ctx) {
-  const c = cfg(ctx.env), body = req.method === "POST" ? await req.json() : {};
+  let c = cfg(ctx.env);
+  const body = req.method === "POST" ? await req.json() : {};
   must(typeof body === "object" && body !== null && !Array.isArray(body), "body: a JSON object");
   if (path === "/info") {
     const [r, pot] = [await relayer(ctx.env), new Wallet(ctx.env.POT_KEY).address];
@@ -296,6 +299,11 @@ async function api(req: Request, path: string, ctx: Ctx) {
   if (path === "/relay/claim") return await relayClaim(c, ctx, String(body.lease_id));
   if (path === "/relay/sweep") return await relaySweep(c, ctx);
   const email = await authed(req, ctx.env), user = await userWallet(ctx.env, email);
+  const selected = body.escrow ?? new URL(req.url).searchParams.get("escrow");
+  if (selected !== null && selected !== undefined) {
+    must(guestEscrow(selected), "unknown guest escrow");
+    c = { ...c, escrow: selected };
+  }
   if (path === "/lease-authorization") {
     must(req.method === "POST", "POST required");
     return await authorizeLease(body, user, await admissionSigner(ctx.env));
@@ -328,7 +336,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
       }
       const t = await escrowSign(c, user, "AcceptTerms", [{ name: "termsHash", type: "bytes32" }, { name: "operator", type: "address" }, { name: "cap", type: "uint256" }], { termsHash: body.termsHash, operator: body.operator, cap });
       const tx = await relay(c, ctx, email, c.escrow, "acceptTermsFor", [user.address, body.termsHash, body.operator, cap, t]);
-      await append(ctx, { kind: "accept", email, termsHash: body.termsHash, operator: body.operator, cap: String(cap), tx });
+      await append(ctx, { kind: "accept", email, escrow: c.escrow.toLowerCase(), termsHash: body.termsHash, operator: body.operator, cap: String(cap), tx });
       return { email, accepted: { termsHash: body.termsHash, operator: body.operator, cap: String(cap) }, tx, deposit_tx, ...(await balances(c, ctx, email, user.address)) };
     });
   }

@@ -15,7 +15,9 @@ type Rec = Record<string, any>;
 export const SITE = "https://pod.dstack.soc1024.com/resip-staging";
 export const SERVICE = "https://pod.dstack.soc1024.com/layover-accounts";
 export const CHAIN = "https://pod.dstack.soc1024.com/layover-chain";
-export const ESCROW = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea";
+export const ESCROW = "0xca184cfc10f55b67f8afb42029d768ec6e6f36ad";
+export const LEGACY_ESCROW = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea";
+export const guestEscrow = (value: unknown) => value === ESCROW || value === LEGACY_ESCROW;
 export const TOKEN = "0x9e851bf5e3b613aaa09853a07d1132f49c90b515";
 export const CUSTODY = "https://pod.dstack.soc1024.com/resip-custody-staging/api/custody/";
 const te = new TextEncoder();
@@ -34,7 +36,7 @@ const TERMS_KEYS = "agent_id,cap,category,chain_id,domains,escrow,kind,minutes,m
 export function checkedTerms(value: unknown) {
   const terms = typeof value === "string" ? JSON.parse(value) : value;
   must(terms && typeof terms === "object" && !Array.isArray(terms) && Object.keys(terms).sort().join(",") === TERMS_KEYS, "terms: exact layover-terms/1 fields required");
-  must(terms.kind === "layover-terms/1" && terms.chain_id === 84532 && terms.escrow === ESCROW && terms.token === TOKEN, "terms: wrong payment domain");
+  must(terms.kind === "layover-terms/1" && terms.chain_id === 84532 && guestEscrow(terms.escrow) && terms.token === TOKEN, "terms: wrong payment domain");
   must(terms.mode === "shared" && terms.minutes === 5 && ["price_check", "research"].includes(terms.category), "terms: only shared public GET/HEAD, five minutes");
   must(typeof terms.agent_id === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(terms.agent_id) && !terms.agent_id.startsWith("test-"), "terms: public agent_id required");
   must(typeof terms.thread === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(terms.thread), "terms: thread required");
@@ -57,7 +59,7 @@ async function document(url: string) {
 }
 // No attestation cache: enrollment/build/canary and custody are checked on every authorization.
 export async function verifiedAgent(agentId: string, operator: string) {
-  const agents = await document(SITE + "/api/agents");
+  const agents = await document(SITE + "/api/agents?agent_id=" + encodeURIComponent(agentId));
   const agent = agents.find((a: Rec) => a.agent_id === agentId);
   must(agent && isHex(agent.enc_pub, 32) && typeof agent.ca_cert === "string" && /^[0-9a-f]+$/.test(agent.ca_cert), "agent: current key and proxy CA required");
   must(typeof agent.at === "string" && Number.isFinite(Date.parse(agent.at)), "agent: registration timestamp required");
@@ -88,21 +90,21 @@ export async function backing(wallet: string, termsHash: string, terms: Rec): Pr
   const started = Date.now(), pin = await document(CHAIN + "/head?depth=30");
   checkedPin(pin);
   const read = async (fn: string, args: unknown[]) => {
-    const value = await document(CHAIN + "/call?" + new URLSearchParams({ to: ESCROW, data: escrowAbi.encodeFunctionData(fn, args), block: pin.block_hash }));
+    const value = await document(CHAIN + "/call?" + new URLSearchParams({ to: terms.escrow, data: escrowAbi.encodeFunctionData(fn, args), block: pin.block_hash }));
     checkedPin(value, pin);
-    must(value.to?.toLowerCase() === ESCROW && typeof value.result === "string", "backing: call target/result mismatch");
+    must(value.to?.toLowerCase() === terms.escrow && typeof value.result === "string", "backing: call target/result mismatch");
     return escrowAbi.decodeFunctionResult(fn, value.result);
   };
   const [accepted, claimed, balance, exposure, token] = await Promise.all([
     read("terms", [wallet, termsHash]), read("totalClaimed", [wallet, termsHash]), read("balance", [wallet]), read("exposure", [wallet]), read("token", []),
   ]);
   must(Date.now() - started <= 60000 && token[0].toLowerCase() === TOKEN, "backing: stale snapshot or wrong escrow token");
-  return checkedBacking({ ...pin, chain_id: 84532, escrow: ESCROW, buyer: wallet, terms_hash: termsHash,
+  return checkedBacking({ ...pin, chain_id: 84532, escrow: terms.escrow, buyer: wallet, terms_hash: termsHash,
     operator: accepted[0].toLowerCase(), cap: String(accepted[1]), closed_at: String(accepted[2]), released: accepted[3],
     claimed: String(claimed[0]), balance: String(balance[0]), exposure: String(exposure[0]) }, terms);
 }
 export function checkedBacking(snapshot: Rec, terms: Rec) {
-  must(snapshot.verified_by === "helios-opstack" && snapshot.chain_id === 84532 && snapshot.escrow?.toLowerCase() === ESCROW, "backing: wrong verified chain/domain");
+  must(snapshot.verified_by === "helios-opstack" && snapshot.chain_id === 84532 && guestEscrow(terms.escrow) && snapshot.escrow?.toLowerCase() === terms.escrow, "backing: wrong verified chain/domain");
   must(Number.isSafeInteger(snapshot.block) && snapshot.block >= 0 && /^0x[0-9a-f]{64}$/.test(snapshot.block_hash), "backing: pinned block identity required");
   checkedPin(snapshot);
   must(snapshot.operator?.toLowerCase() === terms.operator && String(snapshot.cap) === terms.cap && String(snapshot.closed_at) === "0" && snapshot.released === false, "backing: terms not accepted/open at agreed cap/operator");
@@ -121,16 +123,17 @@ export async function authorizeLease(body: Rec, wallet: Wallet, signer: Wallet,
   const { terms, text, hash } = checkedTerms(body.terms);
   must(body.agent_id === terms.agent_id, "agent_id differs from accepted terms");
   const agent = await sources.agent(terms.agent_id, terms.operator);
+  must(terms.escrow === (agent.guest_escrow ?? agent.guest_key?.escrow ?? LEGACY_ESCROW), "agent: selected escrow differs from registration");
   const funds = await sources.backing(wallet.address.toLowerCase(), hash, terms);
   // Scope, wallet and payment fields are constructed here, never copied from an opaque caller envelope.
   const rand = () => hex(crypto.getRandomValues(new Uint8Array(32)));
   const reply = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]) as CryptoKeyPair;
   const plain = { kind: "lease", domains: terms.domains, use: "price_check", term_minutes: 5, price_per_gb: terms.price_per_gb,
     token: rand(), salt: rand(), reply_pub: hex(new Uint8Array(await crypto.subtle.exportKey("raw", reply.publicKey))), task: "",
-    buyer_wallet: wallet.address.toLowerCase(), terms_hash: hash, escrow: ESCROW };
+    buyer_wallet: wallet.address.toLowerCase(), terms_hash: hash, escrow: terms.escrow };
   const enc = await seal(agent.enc_pub, canonical(plain));
   const issued = Math.floor(Date.now() / 1000);
-  const admission = { kind: "layover-lease-admission/1", service: SERVICE, chain_id: "84532", escrow: ESCROW, audience: SITE,
+  const admission = { kind: "layover-lease-admission/1", service: SERVICE, chain_id: "84532", escrow: terms.escrow, audience: SITE,
     account: body.site_account, wallet: wallet.address.toLowerCase(), agent_id: terms.agent_id, agent_run: agent.agent_run,
     enc_pub: agent.enc_pub, registration_at: agent.at, terms: text, terms_hash: hash, operator: terms.operator, cap: terms.cap,
     exclusive: false, price_per_gb: terms.price_per_gb, enc_sha256: hex(await sha256(te.encode(canonical(enc)))), nonce: rand(), issued_at: issued, expires_at: issued + 120,

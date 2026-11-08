@@ -24,7 +24,7 @@ FIXTURES = json.loads((HERE / "fixtures.json").read_text())
 RESIP = "https://pod.dstack.soc1024.com/resip-staging"
 A_OK, A_BAD, A_H2 = (f"a0000000-0000-4000-8000-00000000000{i}" for i in (1, 2, 3))
 L_END, L_DECL, L_ACT, L_SHARED, L_RAN_EXCL = (f"b0000000-0000-4000-8000-00000000000{i}" for i in (1, 2, 3, 4, 5))
-POLICY = dict(categories=["price_check", "research"], floor_shared_per_gb=200, floor_exclusive_per_gb=400, max_minutes=120, exclusive=True, address="static", notes="")
+POLICY = dict(guest_escrow="0xca184cfc10f55b67f8afb42029d768ec6e6f36ad", categories=["price_check", "research"], floor_shared_per_gb=200, floor_exclusive_per_gb=400, max_minutes=120, exclusive=True, address="static", notes="")
 
 
 def fetch(args, ctx):
@@ -1229,7 +1229,7 @@ def test_market_fetch_does_not_stand_in_for_couch_slots(e):
     assert not denied(e, t, "record", dict(finding="terms", state="proposed", reason="x", publisher=MAC, slot_id=3, minutes=20))
 
 
-GUEST_ESCROW = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea"
+GUEST_ESCROW = "0xca184cfc10f55b67f8afb42029d768ec6e6f36ad"
 OPERATOR = "0xa43f9f32411358c1319cb36027650a206644c131"
 WALLET = "0x1fbe7a7b3f7a37a967f3d927abd6f04db2766c5b"
 ACC = "ac" * 32  # the buyer's resip account id
@@ -1729,3 +1729,43 @@ def test_exhausted_member_can_settle_but_cannot_close_an_accepted_stay(e):
     send(e, "B", stay(t), thread=t)
     assert "settled" in e.rows("threads")[t]["flags"]
     assert len(e.rows("runs")) == runs == 10
+
+def test_existing_escrow_terms_keep_legacy_verified_reads():
+    import ast
+    from types import SimpleNamespace
+    source = (HERE.parent / "souk.py").read_text()
+    tree = ast.parse(source)
+    previous = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea"
+    rows = [dict(contract="guest_escrow_legacy", fn="balance(address)", args=[WALLET], value=["4"]),
+            dict(contract="guest_escrow", fn="balance(address)", args=[WALLET], value=["99"])]
+    terms = {"escrow": {"terms": json.dumps({"escrow": previous}), "terms_hash": "0x" + "12" * 32}}
+    t = SimpleNamespace(record=lambda _: terms, tool_results=lambda _: rows)
+    ns = dict(json=json, CHAIN=RESIP.rsplit("/", 1)[0] + "/layover-chain",
+              GUEST_ESCROW=GUEST_ESCROW, LEGACY_ESCROW="0xdf9bb576e30ec71e200643ab6fc835eee12c95ea", tag=lambda *_: "0", doc=lambda r: r)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in ("escrow_checks", "chain_value"):
+            exec(ast.get_source_segment(source, node), ns)
+    reads = ns["escrow_checks"](t, WALLET)
+    assert len(reads) == 3 and all("contract=guest_escrow_legacy&" in u for u in reads)
+    assert ns["chain_value"](t, reads[1])["value"] == ["4"]
+
+
+@pytest.mark.parametrize("escrow", [None, GUEST_ESCROW])
+def test_new_terms_use_authenticated_host_policy_escrow(e, escrow):
+    p = dict(POLICY, operator=OPERATOR)
+    p.pop("guest_escrow")
+    if escrow:
+        p["guest_escrow"] = escrow
+    line = enroll(e, policy=p)
+    send(e, "B", json.dumps(dict(domains=["example.com"], category="price_check", minutes=30, max_price=40, exclusive=False, pay="escrow")), kind="lease")
+    t = newest(e)
+    verify(e, t)
+    agent(e, ("record", terms(line)))
+    body = json.loads(e.rows("threads")[t]["records"]["terms"]["escrow"]["terms"])
+    assert body["escrow"] == (escrow or "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea")
+
+
+def test_line_policy_rejects_unknown_guest_escrow(e):
+    send(e, "H", json.dumps(dict(appraisal_id=A_OK, policy=dict(POLICY, guest_escrow="0x" + "01" * 20))), kind="line")
+    assert not lines(e)
+    assert "unknown guest escrow" in json.dumps(e.inbox("H"))

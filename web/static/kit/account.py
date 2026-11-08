@@ -3,8 +3,8 @@
 
   login EMAIL [CODE]                     mail a code; with CODE, sign in to the account and the souk
   balance                                wallet LAYC, escrow balance, exposure and what can be withdrawn, in base units
-  accept TERMS_HASH OPERATOR CAP DEPOSIT deposit DEPOSIT into the escrow and accept the terms
-  close TERMS_HASH                       close the terms (the host may still claim for 1 day)
+  accept TERMS_HASH OPERATOR CAP DEPOSIT [ESCROW] deposit DEPOSIT into the escrow and accept the terms
+  close TERMS_HASH [ESCROW]              close the terms (the host may still claim for 1 day)
   withdraw TO UNITS                      send UNITS LAYC base units (5 LAYC = 5000000) to address TO: wallet first, then the escrow down to its exposure
   export EMAIL [CODE]                    mail a code; with CODE, write the wallet's private key to a 0600 file
 
@@ -53,12 +53,12 @@ def main(cmd, *a):
         return {"signed_in": out["email"], "address": out["address"], "starter": out["starter"], **call("balance")}
     if cmd == "balance" and not a:
         return call("balance")
-    if cmd == "accept" and len(a) == 4:
-        return call("accept", dict(zip(["termsHash", "operator", "cap", "deposit"], a)))
+    if cmd == "accept" and len(a) in (4, 5):
+        return call("accept", dict(zip(["termsHash", "operator", "cap", "deposit", "escrow"], a)))
     if cmd == "withdraw" and len(a) == 2:
         return call("withdraw", {"to": a[0], "amount": a[1]})
-    if cmd == "close" and len(a) == 1:
-        return call("close", {"termsHash": a[0]})
+    if cmd == "close" and len(a) in (1, 2):
+        return call("close", dict(zip(["termsHash", "escrow"], a)))
     if cmd == "export" and len(a) == 1:
         out = call("export", {"confirm": a[0]})
         save("account-export-pending.json", {"email": a[0], "challenge_id": out["challenge_id"]})

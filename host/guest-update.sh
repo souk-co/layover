@@ -4,13 +4,13 @@
 # image is the one in $LH/runner/base. Downloads and checks it first; the switch is one symlink, taken at the next launch.
 set -euo pipefail
 LH=${LAYOVER_HOME:-$HOME/layover}
-GUEST_ESCROW=0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA CHAIN=https://pod.dstack.soc1024.com/layover-chain
+GUEST_ESCROW=0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad CHAIN=https://pod.dstack.soc1024.com/layover-chain
 CALLER=0x$(printf agent | shasum -a 256 | cut -c1-64)
 abi() { "$LH/venv/bin/python" "$(dirname "$0")/abi.py" "$@"; }
 BASE=$(shasum -a 256 "$LH/runner/base/sha256sum.txt" | cut -c1-64)
-for TAG in $(gh api repos/souk-co/layover/releases --jq '.[] | select(.tag_name | startswith("guest-")) | select(.draft | not) | .tag_name'); do
+for TAG in $(curl -fsS https://api.github.com/repos/souk-co/layover/releases | python3 -c 'import json,sys; print("\n".join(r["tag_name"] for r in json.load(sys.stdin) if r["tag_name"].startswith("guest-") and not r["draft"]))'); do
   D=$LH/guests/$TAG
-  [ -f "$D/GUEST.json" ] || { mkdir -p "$D.part"; gh release download "$TAG" -R souk-co/layover -p GUEST.json -p compose-manifest.json -D "$D.part" --clobber; }
+  [ -f "$D/GUEST.json" ] || { mkdir -p "$D.part"; for F in GUEST.json compose-manifest.json; do curl -fLsS -o "$D.part/$F" "https://github.com/souk-co/layover/releases/download/$TAG/$F"; done; }
   [ -f "$D/GUEST.json" ] && S=$D || S=$D.part
   M=$(shasum -a 256 "$S/compose-manifest.json" | cut -c1-64)
   read GM IMG < <(python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));m=json.load(open(sys.argv[2]));print(g["manifest_sha256"],m["base_vm"]["os_image_hash"])' "$S/GUEST.json" "$S/compose-manifest.json")
@@ -20,7 +20,7 @@ for TAG in $(gh api repos/souk-co/layover/releases --jq '.[] | select(.tag_name 
   OK=$(curl -fsS "$CHAIN/call?to=$GUEST_ESCROW&data=$(abi calldata 'approved(bytes32)' $W)" | python3 -c 'import json,sys;d=json.load(sys.stdin);assert d["verified_by"].startswith("helios"),d;print(int(d["result"],16))')
   [ "$OK" = 1 ] || { echo "$TAG: manifest $M not approved on GuestEscrow; skipped"; continue; }
   if [ ! -f "$D/GUEST.json" ]; then
-    gh release download "$TAG" -R souk-co/layover -p workload.img.gz -D "$D.part" --clobber
+    curl -fLsS -o "$D.part/workload.img.gz" "https://github.com/souk-co/layover/releases/download/$TAG/workload.img.gz"
     gunzip -c "$D.part/workload.img.gz" > "$D.part/workload.img"; rm "$D.part/workload.img.gz"
     [ "$(shasum -a 256 "$D.part/workload.img" | cut -c1-64)" = "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["workload_sha256"])' "$D.part/GUEST.json")" ]
     mv "$D.part" "$D"

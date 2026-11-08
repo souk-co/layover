@@ -52,8 +52,9 @@ FINDINGS = {"line": ("enroll",), "lease": ("terms", "settle"), "fetch": ("terms"
 FLEET_URL = RESIP + "/api/couch-slots"
 MARKET_URL = RESIP + "/api/market"  # the site's public market data
 CHAIN = "https://pod.dstack.soc1024.com/layover-chain"  # Helios-verified Base Sepolia reads
-GUEST_ESCROW, LAYC = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea", "0x9e851bf5e3b613aaa09853a07d1132f49c90b515"
-CHAIN_CONTRACTS = {"0x8ff468c8e447f6cf70f05bea1cec1693ec0455ce", "0x036cbd53842c5426634e7929541ec2318f3dcf7e", GUEST_ESCROW, LAYC}
+GUEST_ESCROW, LAYC = "0xca184cfc10f55b67f8afb42029d768ec6e6f36ad", "0x9e851bf5e3b613aaa09853a07d1132f49c90b515"
+LEGACY_ESCROW = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea"
+CHAIN_CONTRACTS = {"0x8ff468c8e447f6cf70f05bea1cec1693ec0455ce", "0x036cbd53842c5426634e7929541ec2318f3dcf7e", GUEST_ESCROW, LEGACY_ESCROW, LAYC}
 # 1 LAYC = $1 = 100 credits. termsHash = keccak256 of the terms' canonical JSON.
 LAYC_UNITS_PER_CREDIT = 10**4
 ESCROW_CHECKS, ESCROW_CHECK_SECONDS, ESCROW_WATCH_SECONDS, ESCROW_START_SECONDS, ESCROW_POLL_SECONDS = 20, 30, 120, 3600, 300
@@ -67,10 +68,11 @@ CHAIN_FNS = {
                      "withdrawNonce(address)", "withdrawable(address)", "totalClaimed(address,bytes32)", "CLAIM_GRACE()"),
     "layc": ("balanceOf(address)", "decimals()", "totalSupply()"),
 }
+CHAIN_FNS["guest_escrow_legacy"] = CHAIN_FNS["guest_escrow"]
 ADDRESS, BLOCK, DEPTH, ARG, TOPIC = (re.compile(r"0x[0-9a-fA-F]{40}"), re.compile(r"[0-9]{1,12}"), re.compile(r"[0-9]{1,3}"),
                                      r"(0x[0-9a-fA-F]{40}|0x[0-9a-f]{64})", r"(0x[0-9a-f]{64}|\*)")
 CHAIN_READS = {
-    "/read": dict(contract=re.compile("escrow|usdc|guest_escrow|layc"), fn=re.compile(r"[A-Za-z]+\([a-z0-9,]*\)"), args=re.compile(ARG + "(," + ARG + ")?"), depth=DEPTH),
+    "/read": dict(contract=re.compile("escrow|usdc|guest_escrow(_legacy)?|layc"), fn=re.compile(r"[A-Za-z]+\([a-z0-9,]*\)"), args=re.compile(ARG + "(," + ARG + ")?"), depth=DEPTH),
     "/call": dict(to=ADDRESS, data=re.compile(r"0x[0-9a-f]{8}([0-9a-f]{64}){0,4}"), depth=DEPTH),
     "/logs": dict(address=ADDRESS, topics=re.compile(TOPIC + "(," + TOPIC + "){0,3}"), **{"from": BLOCK, "to": BLOCK}),
 }
@@ -250,26 +252,25 @@ def conflict(t, s):
 
 def escrow_terms(t, line, mode, per_gb, price, minutes):
     req = t.data["request"]
-    body = dict(kind=TERMS_KIND, chain_id=CHAIN_ID, escrow=GUEST_ESCROW, token=LAYC, thread=t.id, agent_id=line["agent_id"], mode=mode, domains=req["domains"],
+    body = dict(kind=TERMS_KIND, chain_id=CHAIN_ID, escrow=line["policy"].get("guest_escrow", LEGACY_ESCROW), token=LAYC, thread=t.id, agent_id=line["agent_id"], mode=mode, domains=req["domains"],
                 category=req["category"], minutes=minutes, operator=line["policy"]["operator"], price_per_gb=per_gb, cap=str(price * LAYC_UNITS_PER_CREDIT))
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return dict(terms=canonical, terms_hash="0x" + keccak256(canonical), operator=body["operator"], cap=body["cap"], deposit=body["cap"])
 
 
 def escrow_card(e):
-    return (f"Escrow (GuestEscrow {GUEST_ESCROW} on Base Sepolia, chain {CHAIN_ID}, in LAYC {LAYC}, 1 LAYC = 10^6 units): termsHash {e['terms_hash']}, "
+    escrow = json.loads(e["terms"])["escrow"]
+    return (f"Escrow (GuestEscrow {escrow} on Base Sepolia, chain {CHAIN_ID}, in LAYC {LAYC}, 1 LAYC = 10^6 units): termsHash {e['terms_hash']}, "
             f"operator {e['operator']}, cap {e['cap']}, deposit {e['deposit']}. termsHash is keccak256 of these terms' canonical JSON (sorted keys, no spaces): {e['terms']}")
 
 
 def escrow_notice(t):
     e = t.record("terms")["escrow"]
-    return (f"Agreed; nothing is held in the souk. Deposit at least the cap and accept the terms on GuestEscrow from your wallet:\n"
-            f"account accept {e['terms_hash']} {e['operator']} {e['cap']} {e['deposit']}\n"
-            f"(or deposit and acceptTerms({e['terms_hash']}, {e['operator']}, {e['cap']}) from your own wallet). Run `resip verify {RESIP} {t.record('terms')['agent_id']} DIR` "
-            f"and `resip account DIR`, then send `accepted {e['terms_hash']} <your wallet address> <the account id resip printed>` here: the amin counts only leases that account posts. "
-            "The amin then reads the escrow on chain, and keeps checking for ten minutes, until the terms are there and your escrow balance covers all your accepted caps. "
-            "GuestEscrow pays the host's claims only from that balance. Anything above your accepted caps not yet claimed is withdrawable at any time, and closeTerms "
-            "ends these terms, after which the host's guest has one day to claim what the lease used.")
+    return (f"Agreed; the souk holds nothing. Deposit and accept on GuestEscrow:\n"
+            f"account accept {e['terms_hash']} {e['operator']} {e['cap']} {e['deposit']} {json.loads(e['terms'])['escrow']}\n"
+            f"Run `resip verify {RESIP} {t.record('terms')['agent_id']} DIR` and `resip account DIR`, then send "
+            f"`accepted {e['terms_hash']} <wallet address> <account id>` here. The amin checks on-chain funding for ten minutes. "
+            "The guest claims from that balance up to the accepted cap. Unexposed funds are withdrawable; closeTerms ends terms, with one day for final claims.")
 
 
 def escrow_reply(e, t, s):
@@ -314,14 +315,17 @@ def escrow_checks(t, wallet=None):
     wallet = wallet or tag(t, "wallet:")
     if not wallet:
         return []
-    base, h = f"{CHAIN}/read?contract=guest_escrow&fn=", t.record("terms")["escrow"]["terms_hash"]
+    terms = t.record("terms")["escrow"]
+    contract = "guest_escrow_legacy" if json.loads(terms["terms"])["escrow"].lower() == LEGACY_ESCROW else "guest_escrow"
+    base, h = f"{CHAIN}/read?contract={contract}&fn=", terms["terms_hash"]
     return [f"{base}terms(address,bytes32)&args={wallet},{h}", f"{base}balance(address)&args={wallet}", f"{base}exposure(address)&args={wallet}"]
 
 
 def chain_value(t, url):
+    contract = url.split("contract=")[1].split("&")[0]
     fn, args = url.split("&fn=")[1].split("&args=")
     since = int(tag(t, "escrow_from:"))
-    docs = [d for d in (doc(r) for r in t.tool_results("runtime.web_fetch")[since:]) if d and d.get("contract") == "guest_escrow" and d.get("fn") == fn and ",".join(d.get("args", [])).lower() == args and isinstance(d.get("value"), list)]
+    docs = [d for d in (doc(r) for r in t.tool_results("runtime.web_fetch")[since:]) if d and d.get("contract") == contract and d.get("fn") == fn and ",".join(d.get("args", [])).lower() == args and isinstance(d.get("value"), list)]
     return docs[-1] if docs else None
 
 
@@ -358,10 +362,9 @@ def escrow_admit(e, t, s):
             set_timer(e.at + ESCROW_START_SECONDS, "escrow_unstarted", thread=t.id), set_timer(e.at + ESCROW_POLL_SECONDS, "escrow_poll", thread=t.id), post(t, (
         f"GuestEscrow holds these terms for {wallet} at block {terms['block']}, and your balance of {balance} covers your exposure of {exposure} at block {bal['block']} "
         f"(read through layover-chain, Helios-verified). Create the {mode} lease on the line (after `resip verify {RESIP} {x['agent_id']} DIR` and `resip account DIR`):\n"
-        f"resip lease DIR {','.join(x['domains'])} {x['category']} {mode} {x['minutes']} {x['price_per_gb']} {x['price']} --buyer-wallet={wallet} --terms-hash={h} --escrow={GUEST_ESCROW}\n"
-        f"The line's guest bills the lease's bytes at {x['price_per_gb']} cents per GB and claims it from GuestEscrow against its signed statement, never more than the cap of "
-        f"{x['escrow']['cap']} LAYC units. The souk holds and settles nothing for this lease. The amin finds the lease by its termsHash at {lease_url(t)}: "
-        f"the deal ends here {x['minutes']} minutes after the line starts it (or in an hour if no lease starts)."))]
+        f"resip lease DIR {','.join(x['domains'])} {x['category']} {mode} {x['minutes']} {x['price_per_gb']} {x['price']} --buyer-wallet={wallet} --terms-hash={h} --escrow={json.loads(x['escrow']['terms'])['escrow']}\n"
+        f"Claims capped at {x['escrow']['cap']} LAYC units: {lease_url(t)}. "
+        f"Ends after {x['minutes']} minutes, or 1h without a lease."))]
 
 
 def lease_url(t):
@@ -472,7 +475,13 @@ def policy(p):
     if type(p.get("quick_lease", False)) is not bool:
         raise ValueError("quick_lease must be a boolean")
     return dict(categories=cats, quick_lease=p.get("quick_lease", False), floor_shared_per_gb=nat(p["floor_shared_per_gb"]), floor_exclusive_per_gb=nat(p["floor_exclusive_per_gb"]), max_minutes=nat(p["max_minutes"]), exclusive=bool(p["exclusive"]), address=address(p["address"]), notes=str(p.get("notes", "")),
-                operator=operator(p.get("operator")))
+                operator=operator(p.get("operator")), guest_escrow=guest_escrow(p.get("guest_escrow", LEGACY_ESCROW)))
+
+
+def guest_escrow(v):
+    if v not in (GUEST_ESCROW, LEGACY_ESCROW):
+        raise ValueError("unknown guest escrow")
+    return v
 
 
 def operator(v):

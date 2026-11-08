@@ -11,10 +11,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 LH=${LAYOVER_HOME:-$HOME/layover}
 RPC=https://sepolia.base.org CHAIN=https://pod.dstack.soc1024.com/layover-chain SITE=https://pod.dstack.soc1024.com/resip-staging
 SOUK=https://souk-dev.dstack.soc1024.com S=31f5c141-fb2d-4572-939a-68543a2d0649
-CDS=0x14b569c5D81d42621c5C0d4d62185239C86D8d20 ATTEST=0x04f57D219B1CEaE7f000C2a3360Ce49CffF3162e
+CDS=0x14b569c5D81d42621c5C0d4d62185239C86D8d20 ATTEST=0xa90d8D9A40540678a5a3235C96FC95939411D99e
 INTERMEDIATE=0xb4fb420570c9ae811939c8953a785ed10beeca40453a89404f36e87a12b88d90
-ESCROW=0x8FF468c8E447f6cF70f05bEa1cEc1693eC0455cE GUEST_ESCROW=0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA CHAIN_ID=84532
-RUNNER_TAG=runner-v0.1.0-alpha.2 RELEASE_KEY_SHA=4de4686cb585a54375a9ab859aa533e8a81255d9d2c9a76b96d0ae9006ecc0df
+ESCROW=0x8FF468c8E447f6cF70f05bEa1cEc1693eC0455cE GUEST_ESCROW=0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad CHAIN_ID=84532
+RUNNER_TAG=runner-v0.1.0-alpha.3 RELEASE_KEY_SHA=4de4686cb585a54375a9ab859aa533e8a81255d9d2c9a76b96d0ae9006ecc0df
 DSMACK=https://raw.githubusercontent.com/amiller/dsmack/bdecc110f62bad024a2ff7e508b619f7ed0f0860
 GVPROXY_SHA=c6f7b4bc7f21bf810b5cf54e04d979b014c5d96472a03a9e97fe62a00940067c
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
@@ -42,27 +42,28 @@ check)
   settings
   [ "$(uname -m)" = arm64 ] || { echo "Apple silicon only" >&2; exit 1; }
   [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 27 ] || { echo "macOS 27 or later" >&2; exit 1; }
-  need python3 "Xcode command line tools"; need uv "brew install uv (macOS python3 is 3.9; souk.py needs 3.10+)"; need gh "brew install gh, then gh auth login"
+  need python3 "Xcode command line tools"; need uv "brew install uv (macOS python3 is 3.9; souk.py needs 3.10+)"
   need cast "curl -L https://foundry.paradigm.xyz | bash && foundryup"
   OPENSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl; [ -x "$OPENSSL" ] || { echo "brew install openssl@3" >&2; exit 1; }
   cast wallet address --account "$OPERATOR_ACCOUNT" | grep -qi "$OPERATOR" || { echo "keystore $OPERATOR_ACCOUNT is not $OPERATOR" >&2; exit 1; }; echo "fund $OPERATOR with ~0.02 Base Sepolia ETH: chain-enroll uses ~14.4M gas in each of two registries"
   FREE=$(df -g "$HOME" | awk 'NR==2{print $4}'); [ "$FREE" -ge 12 ] || { echo "need 12 GB free, have $FREE" >&2; exit 1; }
-  gh api repos/souk-co/layover --jq .full_name
+  curl -fsS https://api.github.com/repos/souk-co/layover | python3 -c 'import json,sys; print(json.load(sys.stdin)["full_name"])'
   say "ok: $(sw_vers -productVersion), ${FREE} GB free, profile $PROFILE";;
 fetch)  # the signed runner release (base image, templates), gvproxy, dsmack's ownership CLI and cd_args, then the newest approved guest
   settings
   OPENSSL=$(brew --prefix openssl@3)/bin/openssl
   R=$LH/runner-release; mkdir -p "$R" "$LH/runner/runtime/base" "$LH/runner/runtime/helper" "$LH/bin"
-  [ -f "$R/dsmack-runner-macos-arm64-alpha.2.zip" ] || gh release download $RUNNER_TAG -R amiller/dsmack -p 'dsmack-runner-macos-arm64-alpha.2.zip' -D "$R"
-  rm -rf "$R/x"; ditto -x -k "$R/dsmack-runner-macos-arm64-alpha.2.zip" "$R/x"; X=$R/x/dsmack-runner-alpha.2
+  [ -f "$R/dsmack-runner-macos-arm64-alpha.3.zip" ] || curl -fLsS -o "$R/dsmack-runner-macos-arm64-alpha.3.zip" "https://github.com/amiller/dsmack/releases/download/$RUNNER_TAG/dsmack-runner-macos-arm64-alpha.3.zip"
+  rm -rf "$R/x"; ditto -x -k "$R/dsmack-runner-macos-arm64-alpha.3.zip" "$R/x"; X=$R/x/dsmack-runner-alpha.3
   [ "$(sha "$X/release-public.pem")" = $RELEASE_KEY_SHA ]
-  printf 'dsmack-runner-release/1\0' | cat - "$X/release-runner-alpha.2.UNSIGNED.json" > "$R/msg"
-  "$OPENSSL" pkeyutl -verify -pubin -inkey "$X/release-public.pem" -rawin -in "$R/msg" -sigfile "$X/release-runner-alpha.2.sig"
-  (cd "$X" && python3 -c 'import json,hashlib;d=json.load(open("release-runner-alpha.2.UNSIGNED.json"))
+  printf 'dsmack-runner-release/1\0' | cat - "$X/release-runner-alpha.3.UNSIGNED.json" > "$R/msg"
+  "$OPENSSL" pkeyutl -verify -pubin -inkey "$X/release-public.pem" -rawin -in "$R/msg" -sigfile "$X/release-runner-alpha.3.sig"
+  (cd "$X" && python3 -c 'import json,hashlib;d=json.load(open("release-runner-alpha.3.UNSIGNED.json"))
 for f in d["files"]: assert hashlib.sha256(open(f["path"],"rb").read()).hexdigest()==f["sha256"],f["path"]')
   rm -rf "$LH/runner/base"; cp -R "$X/base" "$LH/runner/base"
   for t in scratch result; do gunzip -c "$X/runtime/base/$t-template.ext4.gz" > "$LH/runner/runtime/base/$t-template.ext4"; done
   cp "$X/dsmack-runner" "$X/Info.plist" "$X/entitlements.plist" "$LH/runner-release/"
+  rm -rf "$R/DsmackRunner.app"; ditto -x -k "$X/DsmackRunner.app.zip" "$R"
   G=$LH/runner/runtime/helper/gvproxy-darwin
   [ -f "$G" ] || curl -fsSL -o "$G" https://github.com/containers/gvisor-tap-vsock/releases/download/v0.8.9/gvproxy-darwin
   [ "$(sha "$G")" = $GVPROXY_SHA ]; chmod 755 "$G"
@@ -70,12 +71,11 @@ for f in d["files"]: assert hashlib.sha256(open(f["path"],"rb").read()).hexdiges
   chmod 755 "$LH/bin/dsmack"
   [ -d "$LH/venv" ] || uv venv -q --python 3.12 "$LH/venv"; VIRTUAL_ENV=$LH/venv uv pip install -q eth-account cbor2
   "$HERE/guest-update.sh"
-  say "fetched runner $RUNNER_TAG (signature and $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["files"]))' "$X/release-runner-alpha.2.UNSIGNED.json") files verified), guest $(readlink "$LH/workload")";;
-runner)  # runner APP: check your re-signed DsmackRunner.app and register its CDHash with CDRegistry (open to anyone)
-  settings; APP=${1:?path to your re-signed DsmackRunner.app (HOST-START-HERE.txt)}
-  codesign --verify --strict "$APP"
+  say "fetched runner $RUNNER_TAG (signature and $(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["files"]))' "$X/release-runner-alpha.3.UNSIGNED.json") files verified), guest $(readlink "$LH/workload")";;
+runner)  # [APP]: check the notarized Developer ID DsmackRunner.app from the release (or APP) and register its CDHash with CDRegistry if needed
+  settings; APP=${1:-$LH/runner-release/DsmackRunner.app}
+  codesign --verify --strict "$APP"; spctl -a -t exec "$APP"; xcrun stapler validate -q "$APP"
   CD=$(codesign -dvvv "$APP" 2>&1 | sed -n 's/^CandidateCDHashFull sha256=//p'); [ ${#CD} = 64 ]
-  cmp "$APP/Contents/MacOS/dsmack-runner" "$LH/runner-release/dsmack-runner" >/dev/null && echo "note: executable is byte-identical to the release (only the mini's device can launch it)"
   "$LH/venv/bin/python" "$LH/bin/cd_args.py" "$APP/Contents/MacOS/dsmack-runner" > "$LH/runner-build.json"
   b() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$LH/runner-build.json" "$1"; }
   BUILD=$(call $CDS $(abi calldata 'buildOf(bytes32)' $CD))
@@ -88,10 +88,14 @@ runner)  # runner APP: check your re-signed DsmackRunner.app and register its CD
 enroll)  # a fresh App Attest key from your runner; refuses to overwrite an existing enrollment
   settings; E=$LH/runner/enrollment
   [ ! -e "$E/keyId.txt" ] || { echo "$E already holds key $(kid); move it aside to rotate" >&2; exit 1; }
-  run mkdir -p "$E"; run sh -c "head -c 32 /dev/urandom > '$LH/runner/enrollment.challenge.bin'"
+  [ ! -e "$E" ] || { echo "$E exists without a key; remove it before retrying enrollment" >&2; exit 1; }
+  run mkdir -p "$(dirname "$E")"; run sh -c "head -c 32 /dev/urandom > '$LH/runner/enrollment.challenge.bin'"
   run open -n -W "$LH/runner/DsmackRunner.app" --args enroll "$E" "$LH/runner/enrollment.challenge.bin"
+  if [ $DRY = 0 ]; then
+    [ -s "$E/keyId.txt" ] && [ -s "$E/attestation.cbor" ] && [ -s "$E/clientData.bin" ] || { echo "runner enrollment outputs missing: $E" >&2; exit 1; }
+  fi
   [ $DRY = 1 ] || say "enrolled key $(kid); put it on chain within 3 days (Apple leaf lifetime): $0 chain-enroll";;
-chain-enroll)  # AppleAttestRegistryV1.enroll in each registry a consumer verifies against: the key directory 0x04f5 (site, couch kit,
+chain-enroll)  # AppleAttestRegistryV1.enroll in each registry a consumer verifies against: the key directory (site, couch kit,
   # accounts) and GuestEscrow's own verifier, read from GuestEscrow.attest(). verify() answers only the registry's one consumer, so
   # a key enrolled in one is unknown to the other. Permissionless; Apple's chain and CDRegistry decide.
   settings; E=$LH/runner/enrollment; K=$(kid)
@@ -150,7 +154,7 @@ souk)  # souk NAME '{"cgnat":false,...}': enroll the line as a seller in the IP 
   [ -f "$LH/bin/souk.py" ] || curl -fsSL -o "$LH/bin/souk.py" https://pod.dstack.soc1024.com/resip-staging/kit/souk.py
   "$LH/venv/bin/python" "$LH/bin/souk.py" list >/dev/null || { echo "log in first: $LH/venv/bin/python $LH/bin/souk.py login $SOUK $EMAIL (twice: request, then with the mailed code)" >&2; exit 1; }
   AP=$(cat "$LH/instances/$N/appraisal_id")
-  TEXT=$(python3 -c 'import json,sys;print(json.dumps({"appraisal_id":sys.argv[1],"owner_reported":json.loads(sys.argv[2]),"policy":json.loads(sys.argv[3])}))' "$AP" "$OWN" "$POLICY")
+  TEXT=$(python3 -c 'import json,sys;print(json.dumps({"appraisal_id":sys.argv[1],"owner_reported":json.loads(sys.argv[2]),"policy":dict(json.loads(sys.argv[3]), guest_escrow=sys.argv[4].lower())}))' "$AP" "$OWN" "$POLICY" "$GUEST_ESCROW")
   run "$LH/venv/bin/python" "$LH/bin/souk.py" send $S "$(python3 -c 'import json,sys;print(json.dumps({"kind":"line","text":sys.argv[1]}))' "$TEXT")"
   say "sent; the souk answers \"Enrolled line thread-N\" within a minute: python3 $LH/bin/souk.py inbox $S";;
 couch)

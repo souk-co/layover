@@ -1,7 +1,7 @@
-// Attestation checks, using dsmack's guest-Attest verifier pinned at a public commit. The App Attest key is the one the
+// Attestation checks, using the same guest-Attest verifier as the served couch kit. The App Attest key is the one the
 // attestation names, read from AppleAttestRegistryV1 through layover-chain (Helios-verified reads). The registry admitted it
 // only with an Apple-rooted attestation of an approved CDRegistry build, so no per-device enrollment is pinned here.
-import { cat, checkAssertion, decodeAttestation, hex, sha256, unhex } from "https://raw.githubusercontent.com/amiller/dsmack/0213e04df5bc58bf71882b34a673e53a9a6f3fa0/dstack-compat/secret-release/policy.mjs";
+import { cat, checkAssertion, decodeAttestation, hex, sha256, unhex } from "./static/kit/couch/dsmack/policy.mjs";
 import { heliosChain } from "./static/kit/couch/chain.mjs";
 // The contracts the couch kit trusts: AppleAttestRegistryV1, Canary and the CDRegistry the registry must name.
 import POLICY from "./static/kit/couch/dsmack/sandbox-policy.json" with { type: "json" };

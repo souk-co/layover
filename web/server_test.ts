@@ -1,6 +1,6 @@
 // deno test -A --no-check web/server_test.ts (verify.ts has pre-existing type errors)
 import { assertEquals, assertRejects, assertThrows } from "jsr:@std/assert@1";
-import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, warmCaches, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
+import { BROKER_FLEET, BROKER_NETWORK, CHAIN, CLAIMED, configure, ESCROW, PREVIOUS_GUEST_ESCROW, GUEST_CLAIMED, GUEST_ESCROW, HISTORY_FILE, HOST_LEVELS, INDEX_MAX, kit, LAYC, LOG_SPAN, warmCaches, handler, hostLevel, PROBE_EXPIRE_MS, sampleHistory, SIGNUP_LIMITS, SOUK_ID, SOUK_URL } from "./server.ts";
 
 Deno.test("a probe request unanswered for 10 minutes after filing is expired, pass false; a newer one stays open", async () => {
   const dataDir = await Deno.makeTempDir(), ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -471,7 +471,7 @@ const chainStub = (head: number, logs: Rec[], seen: string[], state: Record<stri
     if (q("fn") === "CLAIM_GRACE()") return Response.json({ contract: q("contract"), block: head - 30, value: ["86400"], verified_by: "helios-opstack" });
     return Response.json({ block: head - 30, block_hash: "0x" + w(head - 30), head, value: [state[q("contract") + " " + q("fn") + " " + q("args")]], verified_by: "helios-opstack" });
   }
-  assertEquals([u.pathname.endsWith("/logs"), [[ESCROW.address, CLAIMED], [GUEST_ESCROW, GUEST_CLAIMED]].some(([a, t]) => a === q("address") && t === q("topics"))], [true, true]);
+  assertEquals([u.pathname.endsWith("/logs"), [[ESCROW.address, CLAIMED], [GUEST_ESCROW, GUEST_CLAIMED], [PREVIOUS_GUEST_ESCROW, GUEST_CLAIMED]].some(([a, t]) => a === q("address") && t === q("topics"))], [true, true]);
   const [from, to] = [Number(q("from")), Number(q("to"))];
   if (to - from + 1 > LOG_SPAN || to > head) return Response.json({ error: "from..to must be integers spanning at most 200 blocks" }, { status: 400 });
   return Response.json({ address: ESCROW.address, from, to, head, logs: logs.filter((l) => l.address === q("address") && l.block >= from && l.block <= to), verified_by: "helios-opstack" });
@@ -496,14 +496,15 @@ Deno.test("status: escrow token balance via eth_call; Claimed events indexed for
     assertEquals([e.token, e.balance, e.decimals, e.chain], [usdc, "100000000", 6, CHAIN]);
     assertEquals(e.claim_index, { since: head - INDEX_MAX + 1, scanned_to: head, missed_blocks: 0 });
     assertEquals(e.last_claimed, { escrow: "escrow", block: head - 5, tx: "0x" + w(head - 5), user: addr(0x51), operator: addr(0x52), terms_hash: "0x" + w(0x53), cumulative_owed: "1500000", period: "2920" });
-    assertEquals(seen.filter((x) => x.includes("/logs")).length, 2 * INDEX_MAX / LOG_SPAN);  // both escrows
+    assertEquals(seen.filter((x) => x.includes("/logs")).length, 3 * INDEX_MAX / LOG_SPAN);  // usage, current guest and previous guest escrow
     const pairs = (await Deno.readTextFile(dataDir + "/records.jsonl")).trim().split("\n").map((l) => JSON.parse(l));
     assertEquals(pairs.map((p) => [p.kind, p.escrow, p.user, p.operator, p.terms_hash, p.first_claim_block]), [["escrow_pair", "escrow", addr(0x51), addr(0x52), "0x" + w(0x53), head - 1500]]);
     head += 10;
     seen.length = 0;
     assertEquals((await get()).claim_index, { since: 1_000_000 - INDEX_MAX + 1, scanned_to: head, missed_blocks: 0 });
     assertEquals(seen.filter((x) => x.includes("/logs")), [`/layover-chain/logs?address=${ESCROW.address}&topics=${CLAIMED}&from=${head - 9}&to=${head}`,
-      `/layover-chain/logs?address=${GUEST_ESCROW}&topics=${GUEST_CLAIMED}&from=${head - 9}&to=${head}`]);
+      `/layover-chain/logs?address=${GUEST_ESCROW}&topics=${GUEST_CLAIMED}&from=${head - 9}&to=${head}`,
+      `/layover-chain/logs?address=${PREVIOUS_GUEST_ESCROW}&topics=${GUEST_CLAIMED}&from=${head - 9}&to=${head}`]);
     head += INDEX_MAX + 500;
     assertEquals((await get()).claim_index.missed_blocks, 500);
   } finally {
@@ -968,4 +969,26 @@ Deno.test("explicit test mailbox repeats invitations but retains daily caps and 
     assertEquals(stats.starter_signups.used_today, 6);
     assertEquals(JSON.stringify(stats).includes("souk-test@"), false);
   } finally { globalThis.fetch = original; await Deno.remove(dataDir, { recursive: true }); }
+});
+
+
+Deno.test("persisted previous guest escrow pairs keep their original totals after registry migration", async () => {
+  const real = globalThis.fetch, dataDir = await Deno.makeTempDir(), seen: string[] = [];
+  const user = addr(0x71), operator = addr(0x72), terms_hash = "0x" + w(0x73);
+  const pair = { kind: "escrow_pair", escrow: "guest_escrow", user, operator, terms_hash, first_claim_block: 1 };
+  await Deno.writeTextFile(dataDir + "/records.jsonl", JSON.stringify(pair) + "\n" +
+    JSON.stringify({ ...pair, escrow_address: GUEST_ESCROW }) + "\n");
+  const stub = chainStub(4_000_000, [], seen, {
+    [`guest_escrow_legacy totalClaimed(address,bytes32) ${user},${terms_hash}`]: "4",
+    [`guest_escrow totalClaimed(address,bytes32) ${user},${terms_hash}`]: "99",
+  });
+  configure({ chainCacheMs: 0 });
+  globalThis.fetch = ((url: string) => Promise.resolve(url === BROKER_FLEET ? Response.json([]) : stub(new URL(url)))) as typeof fetch;
+  try {
+    const response = await handler(new Request("http://x/api/market"), { dataDir });
+    const market = await response.json();
+    assertEquals(response.status, 200);
+    assertEquals(market.hosts[operator].claims.guest_escrow_legacy.paid, "4");
+    assertEquals(market.hosts[operator].claims.guest_escrow.paid, "99");
+  } finally { globalThis.fetch = real; await Deno.remove(dataDir, { recursive: true }); }
 });

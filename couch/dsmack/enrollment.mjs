@@ -182,7 +182,7 @@ export async function verifyEnrollment(enrollment, cdhash, now = Date.now()) {
   require(
     ext.get("apple_cd_hash_type_01")?.[0] === 2 &&
       hex(ext.get("apple_cd_hash_hash_01")) === cdhash &&
-      hex(ext.get("apple_validation_category_01")) === "03000000",
+      ["03000000", "06000000"].includes(hex(ext.get("apple_validation_category_01"))),
     "enrollment build/category",
   );
   const nonce = cat(

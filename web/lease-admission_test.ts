@@ -2,12 +2,12 @@ import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { Wallet } from "npm:ethers@6.13.4/wallet";
 import { keccak256 } from "npm:ethers@6.13.4/crypto";
 import { Bad, canonical, hex, sha256 } from "./verify.ts";
-import { admissionSnapshot, checkAdmission, ADMISSION_ESCROW, ADMISSION_SITE, ADMISSION_SERVICE, ADMISSION_TOKEN } from "./lease-admission.ts";
+import { admissionSnapshot, checkAdmission, ADMISSION_ESCROW, ADMISSION_SITE, ADMISSION_SERVICE, ADMISSION_TOKEN, LEGACY_ESCROW } from "./lease-admission.ts";
 
 const signer = new Wallet("0x" + "12".repeat(32)), wallet = "0x" + "34".repeat(20), operator = "0x" + "56".repeat(20), hash = "0x" + "78".repeat(32);
 const now = Math.floor(Date.now() / 1000), account = "ab".repeat(32);
 async function fixture() {
-  const agent = { agent_id: "host", enc_pub: "cd".repeat(32), facts: { run: "run" }, at: "2026-11-06T00:00:00.000Z" };
+  const agent = { guest_escrow: ADMISSION_ESCROW, agent_id: "host", enc_pub: "cd".repeat(32), facts: { run: "run" }, at: "2026-11-06T00:00:00.000Z" };
   const terms = canonical({ kind: "layover-terms/1", chain_id: 84532, escrow: ADMISSION_ESCROW, token: ADMISSION_TOKEN, thread: "thread-1", agent_id: "host", mode: "shared", domains: ["example.com"], category: "price_check", minutes: 5, operator, price_per_gb: 200, cap: "200001" });
   const enc = { epk: "11".repeat(32), nonce: "22".repeat(12), ct: "33".repeat(40) };
   const admission = { kind: "layover-lease-admission/1", chain_id: "84532", escrow: ADMISSION_ESCROW, audience: ADMISSION_SITE, service: ADMISSION_SERVICE, account, wallet, agent_id: "host", agent_run: "run", enc_pub: agent.enc_pub, registration_at: agent.at, terms_hash: keccak256(new TextEncoder().encode(terms)), terms, operator, cap: "200001", exclusive: false, price_per_gb: 200, enc_sha256: hex(await sha256(new TextEncoder().encode(canonical(enc)))), nonce: "45".repeat(32), issued_at: now, expires_at: now + 90, backing_block: 123, backing_block_hash: hash };
@@ -99,4 +99,22 @@ Deno.test("token admission: atomic nonce/pair reservation survives restart and n
     globalThis.fetch = real;
     await Deno.remove(dir, { recursive: true }); await Deno.remove(restart, { recursive: true });
   }
+});
+
+
+Deno.test("legacy registration admission selects legacy chain domain and refuses route mismatch", async () => {
+  const { body, agent, snapshot } = await fixture();
+  const terms = JSON.parse(body.admission.terms);
+  terms.escrow = LEGACY_ESCROW;
+  body.admission.terms = canonical(terms);
+  body.admission.terms_hash = keccak256(new TextEncoder().encode(body.admission.terms));
+  body.terms_hash = body.admission.terms_hash;
+  body.admission.escrow = LEGACY_ESCROW;
+  snapshot.escrow = LEGACY_ESCROW;
+  snapshot.terms_hash = body.admission.terms_hash;
+  body.signature = await signer.signMessage(canonical(body.admission));
+  await assertRejects(() => checkAdmission(body, account, agent, signer.address, async () => snapshot, now));
+  const { guest_escrow: _route, ...legacyAgent } = agent;
+  const result = await checkAdmission(body, account, legacyAgent, signer.address, async () => snapshot, now);
+  assertEquals(result.authorization.escrow, LEGACY_ESCROW);
 });

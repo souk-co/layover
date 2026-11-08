@@ -101,7 +101,7 @@ const verdict = async (agent_id: string | null, v: Rec) => {
 const appraisalView = async (p: Rec) => {
   const r = p.report;
   return { id: p.id, agent_id: p.agent_id, request_id: r.request_id, ...(await verdict(p.agent_id, p.verification)), coarse: { region: r.region, isp_class: r.isp_class, residential: r.residential, cgnat: r.cgnat },
-    asn: r.asn, beacon: r.beacon, challenges: r.challenges, bandwidth_mbps: r.bandwidth_mbps, at: r.at, guest_version: r.guest_version, attestation: p.attestation };
+    asn: r.asn, beacon: r.beacon, challenges: r.challenges, bandwidth_mbps: r.bandwidth_mbps, at: r.at, guest_version: r.guest_version, guest_escrow: p.guest_escrow ?? PREVIOUS_GUEST_ESCROW.toLowerCase(), attestation: p.attestation };
 };
 // A statement is publicLease (b12111f) cut to what a payment decision reads, plus end_reason and the site's verdict.
 // attestation_pass leaves out the custody check (custody replaces the allowed build on every release, and a lease that
@@ -356,7 +356,7 @@ async function custodyCheck(agent_id: string, f: Rec) {
 }
 async function allowed(a: Rec) {
   const check = await custodyCheck(a.agent_id, a.verification.facts);
-  return { ...a, verification: { ...a.verification, ok: a.verification.ok && check.ok, checks: [...a.verification.checks, check] } };
+  return { ...a, guest_escrow: a.guest_key?.escrow ?? PREVIOUS_GUEST_ESCROW.toLowerCase(), verification: { ...a.verification, ok: a.verification.ok && check.ok, checks: [...a.verification.checks, check] } };
 }
 
 // --- the public dashboard's minute series: like the scheduler, it runs after API requests, at most one row a minute, and appends
@@ -566,7 +566,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
     if (bound === null ? !agent_id.startsWith("test-") : !(await cfg.operators(key_id)).includes(bound)) {
       throw new Conflict(bound ? `agent_id ${agent_id} is bound to operator ${bound}; runner key ${key_id} is not linked to it` : `custody has bound no operator to agent_id ${agent_id}: the guest takes its state before it registers`);
     }
-    const proof = guest_key === undefined ? {} : { guest_key: await checkGuestKey(guest_key, verification, custody, GUEST_ESCROW, checked) };
+    const proof = guest_key === undefined ? {} : { guest_key: await checkGuestKey(guest_key, verification, custody, [GUEST_ESCROW, PREVIOUS_GUEST_ESCROW], checked) };
     if (guest_key !== undefined) {
       const latest = await custodyGet(agent_id);
       must(latest.operator?.toLowerCase() === proof.guest_key.operator && (await cfg.operators(key_id)).some(x => x.toLowerCase() === proof.guest_key.operator), "guest_key: current operator ownership changed");
@@ -660,7 +660,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
     noIp(report, "report");
     const v = await checked(attestation, await binding(new TextEncoder().encode(canonical(report))), sameRun(agent!));
     must(v.ok, "appraisal attestation did not verify: " + v.checks.filter((c) => !c.ok).map((c) => `${c.name} (${c.detail})`).join("; "));
-    const r = { kind: "appraisal", id: crypto.randomUUID(), agent_id: mp[1], report, attestation, registration: sameRun(agent!) };
+    const r = { kind: "appraisal", id: crypto.randomUUID(), agent_id: mp[1], report, attestation, guest_escrow: agent!.guest_key?.escrow ?? PREVIOUS_GUEST_ESCROW.toLowerCase(), registration: sameRun(agent!) };
     await append(ctx, r);
     return { id: r.id, verification: v };
   }
@@ -791,7 +791,7 @@ async function api(req: Request, path: string, ctx: Ctx) {
       must(verification.ok && custody.allowed?.manifests.includes(verification.facts.manifest_sha256) && custody.allowed?.os_image_hashes.includes(verification.facts.os_image_hash), "token admission: current guest measurement is not allowed");
       must(custody.operator === body.admission.operator && (await cfg.operators(verification.facts.key_id)).includes(custody.operator), "token admission: operator does not own this registration");
       token = await checkAdmission(body, account, { ...a, facts: verification.facts }, ctx.env?.LEASE_ADMISSION_SIGNER ?? ADMISSION_CONFIG.service_signer,
-        () => admissionSnapshot(body.admission.wallet, body.admission.terms_hash, chain));
+        () => admissionSnapshot(body.admission.wallet, body.admission.terms_hash, chain, body.admission.escrow));
       const latest = (await records(ctx)).findLast((r) => r.kind === "agent" && r.agent_id === agent_id);
       must(latest?.enc_pub === a.enc_pub && latest?.at === a.at && latest?.attestation === a.attestation, "token admission: registration changed during validation");
       must(body.admission.expires_at > Math.floor(Date.now() / 1000), "token admission: authorization expired before reservation");
@@ -974,12 +974,14 @@ export const CHAIN = "https://pod.dstack.soc1024.com/layover-chain";
 export const CLAIMED = "0x2efe0d5f05f64dd46ce04f78eb9a5f7553a7906f99fc51a94948e3390b879bba";
 // GuestEscrow (dsmack PR #90, 220f6c1), paid in LAYC: Claimed(address indexed user, address indexed guestKey, bytes32 indexed termsHash,
 // address operator, uint256 cumulativeOwed, uint256 amount), no period; a pair's total is totalClaimed(user, termsHash).
-export const GUEST_ESCROW = "0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA", LAYC = "0x9e851Bf5E3b613aaA09853A07D1132F49c90b515";
+export const GUEST_ESCROW = "0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad", LAYC = "0x9e851Bf5E3b613aaA09853A07D1132F49c90b515";
+export const PREVIOUS_GUEST_ESCROW = "0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA";
 export const GUEST_CLAIMED = "0x5ff05825c9fb9b33dad13f66f13d0b8cb6a7fd6add23709ff82de1f2e3b9994d";
 // Per escrow: its layover-chain contract name, address, Claimed topic, where the operator is, and the pair-total function.
 export const ESCROWS = [
   { contract: "escrow", address: ESCROW.address, token: "usdc", topic: CLAIMED, operator: (l: Rec) => l.topics[2], total: "claimed(address,bytes32)" },
   { contract: "guest_escrow", address: GUEST_ESCROW, token: "layc", topic: GUEST_CLAIMED, operator: (l: Rec) => l.data.slice(0, 66), total: "totalClaimed(address,bytes32)" },
+  { contract: "guest_escrow_legacy", address: PREVIOUS_GUEST_ESCROW, token: "layc", topic: GUEST_CLAIMED, operator: (l: Rec) => l.data.slice(0, 66), total: "totalClaimed(address,bytes32)" },
 ];
 export const LOG_SPAN = 200, INDEX_MAX = 2000;
 const claims = { since: null as number | null, scanned_to: null as number | null, missed_blocks: 0, recent: [] as Rec[] };
@@ -1015,7 +1017,7 @@ const word = (h: string, i: number) => BigInt("0x" + h.slice(2 + 64 * i, 66 + 64
 // holds (records written before the chain lock could repeat one).
 const escrowPairs = (rs: Rec[]) => {
   const seen = new Set<string>(), key = (r: Rec) => [r.escrow, r.user, r.terms_hash].join(" ");
-  return rs.filter((r) => r.kind === "escrow_pair").map((r) => ({ escrow: "escrow", ...r })).filter((r) => !seen.has(key(r)) && !!seen.add(key(r)));
+  return rs.filter((r) => r.kind === "escrow_pair").map((r) => ({ escrow: "escrow", ...r, ...(r.escrow === "guest_escrow" && !r.escrow_address ? { escrow: "guest_escrow_legacy" } : {}) })).filter((r) => !seen.has(key(r)) && !!seen.add(key(r)));
 };
 // One chain answer per key at a time: a request waits for the one before it (so scans and escrow_pair appends never interleave),
 // and an answer younger than cfg.chainCacheMs is reused. A failed answer is not kept.
@@ -1042,10 +1044,10 @@ async function scanClaims(ctx: Ctx) {
       const { logs } = await chain("/logs", { address: e.address, topics: e.topic, from: String(from), to: String(Math.min(head, from + LOG_SPAN - 1)) });
       for (const l of logs) {
         // GuestEscrow's data is (operator, cumulativeOwed, amount); UsageEscrow's is (cumulativeOwed, period).
-        const guest = e.contract === "guest_escrow", c = { escrow: e.contract, block: l.block, tx: l.tx, user: "0x" + l.topics[1].slice(26), operator: "0x" + e.operator(l).slice(26),
+        const guest = e.token === "layc", c = { escrow: e.contract, block: l.block, tx: l.tx, user: "0x" + l.topics[1].slice(26), operator: "0x" + e.operator(l).slice(26),
           terms_hash: l.topics[3], cumulative_owed: String(word(l.data, guest ? 1 : 0)), ...(guest ? { amount: String(word(l.data, 2)) } : { period: String(word(l.data, 1)) }) };
         claims.recent.push(c);
-        if (!known.has(key(e.contract, c.user, c.terms_hash))) await append(ctx, { kind: "escrow_pair", escrow: e.contract, user: c.user, operator: c.operator, terms_hash: c.terms_hash, first_claim_block: c.block });
+        if (!known.has(key(e.contract, c.user, c.terms_hash))) await append(ctx, { kind: "escrow_pair", escrow: e.contract, escrow_address: e.address, user: c.user, operator: c.operator, terms_hash: c.terms_hash, first_claim_block: c.block });
         known.add(key(e.contract, c.user, c.terms_hash));
       }
     }
@@ -1078,7 +1080,7 @@ export async function scanActivity(ctx: Ctx) {
   for (let from = Math.max((cursor ?? -Infinity) + 1, head - INDEX_MAX + 1); from <= head; from += LOG_SPAN) {
     const to = Math.min(head, from + LOG_SPAN - 1);
     for (const escrow of ESCROWS) {
-      const topics = escrow.contract === "guest_escrow" ? ACTIVITY_TOPICS : {
+      const topics = escrow.token === "layc" ? ACTIVITY_TOPICS : {
         ...Object.fromEntries(Object.entries(ACTIVITY_TOPICS).filter(([, event]) => !["Claimed", "withdraw"].includes(event))),
         [CLAIMED]: "Claimed",
         "0x7084f5476618d8e60b11ef0d7d3f06914655adb8793e28ff7f018d4c76d505d5": "withdraw",

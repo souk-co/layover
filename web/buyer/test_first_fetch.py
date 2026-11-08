@@ -23,7 +23,7 @@ class FirstFetchTest(unittest.TestCase):
         self.output = self.path / "body.html"; self.calls = []; self.http_calls = []
         (self.path / "account.json").write_text(json.dumps(dict(address="0x" + "11" * 20, session="private-account-session", url="https://pod.dstack.soc1024.com/layover-accounts")))
         self.env = patch.dict(os.environ, SOUK_HOME=str(self.path)); self.env.start()
-        self.request = dict(kind="layover-terms/1", chain_id=84532, escrow="0xdf9bb576e30ec71e200643ab6fc835eee12c95ea", token="0x9e851bf5e3b613aaa09853a07d1132f49c90b515", thread="thread-1", agent_id="agent-1", mode="shared", domains=["example.com"], category="price_check", minutes=5, operator="0x" + "22" * 20, price_per_gb=200, cap="200000")
+        self.request = dict(kind="layover-terms/1", chain_id=84532, escrow="0xca184cfc10f55b67f8afb42029d768ec6e6f36ad", token="0x9e851bf5e3b613aaa09853a07d1132f49c90b515", thread="thread-1", agent_id="agent-1", mode="shared", domains=["example.com"], category="price_check", minutes=5, operator="0x" + "22" * 20, price_per_gb=200, cap="200000")
         self.quote = dict(kind="layover-allocation/1", status="requires_acceptance", operation_id="", expires=int(time.time()) + 3600, thread="thread-1", base=client.BASE,
             terms=dict(agent_id="agent-1", domains=["example.com"], category="price_check", minutes=5, price=20, price_per_gb=200, exclusive=False,
                 escrow=dict(terms=json.dumps(self.request, sort_keys=True, separators=(",", ":")), terms_hash="0x" + "33" * 32, operator=self.request["operator"], cap="200000", deposit="200000")))
@@ -79,6 +79,15 @@ class FirstFetchTest(unittest.TestCase):
         self.assertEqual(sum(Path(c[1]).name == "account.py" and c[2] == "close" for c in self.calls if c[0] != "deno"), 1)
         self.assertEqual(self.operation.stat().st_mode & 0o777, 0o600)
         self.assertEqual(json.loads(self.operation.read_text())["stage"], "closed")
+    def test_legacy_quote_accepts_on_its_selected_escrow(self):
+        legacy = "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea"
+        self.request["escrow"] = legacy
+        self.quote["terms"]["escrow"]["terms"] = json.dumps(self.request, sort_keys=True, separators=(",", ":"))
+        self.quote["terms"]["escrow"]["terms_hash"] = "0x" + client.keccak256(self.quote["terms"]["escrow"]["terms"])
+        self.invoke()
+        accept = next(c for c in self.calls if c[0] != "deno" and Path(c[1]).name == "account.py" and c[2] == "accept")
+        self.assertEqual(accept[-1], legacy)
+
     def test_over_cap_quote_stops_before_acceptance(self):
         self.quote["terms"]["escrow"]["cap"] = "200001"
         with self.assertRaisesRegex(ValueError, "allocation"):

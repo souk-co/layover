@@ -70,9 +70,9 @@ Connection is **Live today** on team Macs — that is today's whole supply, so a
 
 ## 5. Join with your own Mac
 
-**You are the agent running on the host's Mac. You run every command below on this Mac, through enrollment with the amin.** Once your principal chooses to host, continue through the steps; do not write a handoff for “whoever runs the Mac side”. The only project-maintainer operation is registering a couch class on the escrow (request it by issue, below). Credentials, repository access, a funded wallet and an Apple Developer signing profile are prerequisites, not a separate Mac operator.
+**You are the agent running on the host's Mac. You run every command below on this Mac, through enrollment with the amin.** Once your principal chooses to host, continue through the steps; do not write a handoff for “whoever runs the Mac side”. The only project-maintainer operation is registering a couch class on the escrow (request it by issue, below). Credentials, repository access and a funded testnet wallet are prerequisites, not a separate Mac operator.
 
-Run from this repository's root. Replace uppercase arguments with this host's values; use simple values without spaces for `HOST`, `KEYSTORE` and `PERSON_ID`. Join the souk and obtain `PERSON_ID` from login (§3) first. Install `gh`, `uv`, `openssl@3` and Foundry (`cast`); authenticate `gh`, import your operator wallet with `cast wallet import KEYSTORE --interactive`, and fund it with about 0.02 Base Sepolia ETH. You need an Apple Developer App ID with App Attest and a development profile naming this Mac.
+Run from this repository's root. Replace uppercase arguments with this host's values; use simple values without spaces for `HOST`, `KEYSTORE` and `PERSON_ID`. Join the souk and obtain `PERSON_ID` from login (§3) first. Install `uv`, `openssl@3` and Foundry (`cast`); import your operator wallet with `cast wallet import KEYSTORE --interactive`, and fund it with about 0.02 Base Sepolia ETH. The released Developer ID app enrolls through LaunchServices.
 
 ### 1. Check macOS and hardware
 
@@ -90,15 +90,15 @@ Use `desktop` instead of `laptop` for an always-on Mac. `check` requires Apple s
 host/join.sh fetch
 ```
 
-This fetches `runner-v0.1.0-alpha.2` from `amiller/dsmack`, verifies the pinned release signing key, release signature and every file hash, verifies gvproxy's hash, and fetches a guest approved on GuestEscrow through Helios-verified reads. It installs files under `~/layover`.
+This fetches `runner-v0.1.0-alpha.3` from `amiller/dsmack`, verifies the pinned release signing key, release signature and every file hash, verifies gvproxy's hash, and fetches a guest approved on GuestEscrow through Helios-verified reads. It installs files under `~/layover`.
 
-The shipped runner is development-signed for the team's mini alone. On **this Mac**, follow the downloaded release's `HOST-START-HERE.txt` to package/re-sign `DsmackRunner.app` with your own Apple Developer identity and profile; then run:
+The runner is signed with the project's Developer ID and notarized, so it launches on any Apple-silicon Mac with macOS 27. Nobody has to add your Mac anywhere, and you don't re-sign it. Then run:
 
 ```sh
-host/join.sh runner /absolute/path/to/DsmackRunner.app
+host/join.sh runner
 ```
 
-This checks the code signature, registers this copy's CDHash with CDRegistry if needed, and links the app into `~/layover/runner`. Registration is permissionless: the contract checks that the copy is the approved build. Re-signing with your own account has not yet been tested end to end; `fetch` alone does not make the mini-only app launchable here.
+This checks the code signature, Gatekeeper's assessment and the stapled notarization ticket, confirms CDRegistry admits this copy's CDHash as the approved build (registering it if not; registration is open to anyone), and links the app into `~/layover/runner`.
 
 ### 3. Enroll the App Attest key and link the operator
 

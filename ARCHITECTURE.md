@@ -32,10 +32,10 @@ These Base Sepolia (chain ID 84532) addresses are recorded in the exported code;
 
 | Contract | Address | Source |
 |---|---|---|
-| GuestEscrow | `0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA` | [account deployment](accounts/deploy.py) |
+| GuestEscrow | `0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad` | [account deployment](accounts/deploy.py) |
 | LayoverCredit (LAYC) | `0x9e851Bf5E3b613aaA09853A07D1132F49c90b515` | [account deployment](accounts/deploy.py) |
-| AppleAttestRegistryV1, GuestEscrow verifier | `0xA609124be069225ee2af58741bc109F4bffAB6C3` | [account documentation](accounts/README.md) |
-| AppleAttestRegistryV1, key directory | `0x04f57D219B1CEaE7f000C2a3360Ce49CffF3162e` | [host enrollment](host/join.sh) |
+| AppleAttestRegistryV1, GuestEscrow verifier | `0x954dfBd30FeD1402f087A1926d846Dd81a694ABE` | [account documentation](accounts/README.md) |
+| AppleAttestRegistryV1, key directory | `0xa90d8D9A40540678a5a3235C96FC95939411D99e` | [host enrollment](host/join.sh) |
 | CDRegistry | `0x14b569c5D81d42621c5C0d4d62185239C86D8d20` | [host enrollment](host/join.sh) |
 | Canary | `0x95afFDb230772F350dF71d1DF5597FCC69a690D3` | [couch policy](couch/dsmack/sandbox-policy.json) |
 | UsageEscrow, couch policy | `0x835A61a88Cc8D750b5a971219aa8f9813B2067e6` | [couch registration](couch/dsmack/repin.sh) |

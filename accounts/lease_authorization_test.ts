@@ -2,7 +2,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from "jsr:@std/asse
 import { Wallet } from "npm:ethers@6.13.4/wallet";
 import { verifyMessage } from "npm:ethers@6.13.4/hash";
 import { createDecipheriv, createPrivateKey, createPublicKey, diffieHellman, hkdfSync } from "node:crypto";
-import { authorizeLease, backing, canonical, checkedBacking, checkedTerms, CHAIN, ESCROW, TOKEN } from "./lease_authorization.ts";
+import { authorizeLease, backing, canonical, checkedBacking, checkedTerms, CHAIN, ESCROW, TOKEN, LEGACY_ESCROW } from "./lease_authorization.ts";
 import { admissionSigner, userWallet } from "./server.ts";
 import { Interface } from "npm:ethers@6.13.4/abi";
 
@@ -20,7 +20,7 @@ Deno.test("admission constructs and seals its own wallet, scope and private clie
   const env = { ACCOUNTS_SEED: "12".repeat(32) }, user = await userWallet(env, "buyer@example.com"), signer = await admissionSigner(env);
   assert(user.address !== signer.address);
   const body = { site_account: "33".repeat(32), agent_id: terms.agent_id, terms: canonical(terms) };
-  const result = await authorizeLease(body, user, signer, { agent: async () => ({ enc_pub: pub, at: "2026-11-06T00:00:00Z", agent_run: "44".repeat(32) }), backing: async () => snapshot });
+  const result = await authorizeLease(body, user, signer, { agent: async () => ({ guest_escrow: ESCROW, enc_pub: pub, at: "2026-11-06T00:00:00Z", agent_run: "44".repeat(32) }), backing: async () => snapshot });
   assertEquals(verifyMessage(canonical(result.admission), result.signature), signer.address);
   assert(verifyMessage(canonical(result.admission), result.signature) !== user.address);
   assertEquals(result.admission.account, body.site_account);
@@ -98,4 +98,20 @@ Deno.test("financial reads pin every call to one Helios block and reject inconsi
       await assertRejects(() => backing(buyer, acceptedHash, terms));
     }
   } finally { globalThis.fetch = saved; }
+});
+
+
+Deno.test("legacy and new host admissions keep terms, backing and sealed payment on the selected escrow", async () => {
+  const guest = await key(), pub = hex(await crypto.subtle.exportKey("raw", guest.publicKey));
+  const wallet = new Wallet("0x" + "31".repeat(32)), signer = new Wallet("0x" + "32".repeat(32));
+  for (const escrow of [LEGACY_ESCROW, ESCROW]) {
+    const selected = { ...terms, escrow }, body = { site_account: "33".repeat(32), agent_id: terms.agent_id, terms: selected };
+    const agent = { enc_pub: pub, at: "2026-11-06T00:00:00Z", agent_run: "44".repeat(32), guest_escrow: escrow };
+    const sources = { agent: async () => agent, backing: async (_w: string, _h: string, t: any) => { assertEquals(t.escrow, escrow); return { ...snapshot, escrow }; } };
+    const result = await authorizeLease(body, wallet, signer, sources);
+    assertEquals(result.admission.escrow, escrow);
+    assertEquals(result.private.escrow, escrow);
+    assertEquals(checkedBacking({ ...snapshot, escrow }, selected).escrow, escrow);
+    await assertRejects(() => authorizeLease(body, wallet, signer, { ...sources, agent: async () => ({ ...agent, guest_escrow: escrow === ESCROW ? LEGACY_ESCROW : ESCROW }) }));
+  }
 });

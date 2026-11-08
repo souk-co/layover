@@ -3,11 +3,11 @@ import { Bad, unhex } from "./verify.ts";
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const AGENT_CALLER = "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824";
 const must = (ok: unknown, message: string) => { if (!ok) throw new Bad("guest_key: " + message); };
-export async function checkGuestKey(proof: any, registration: any, custody: any, escrow: string,
+export async function checkGuestKey(proof: any, registration: any, custody: any, escrow: string | string[],
   verify: (attestation: string, data: Uint8Array, expected: any) => Promise<any>) {
   must(proof && Object.keys(proof).sort().join(",") === "address,attestation,escrow,operator", "expected public address,operator,escrow,attestation only");
   for (const name of ["address", "operator", "escrow"]) must(typeof proof[name] === "string" && ADDRESS.test(proof[name]) && proof[name] !== "0x" + "00".repeat(20), name + " must be a nonzero lowercase address");
-  must(proof.escrow === escrow.toLowerCase(), "wrong GuestEscrow");
+  must((Array.isArray(escrow) ? escrow : [escrow]).some(e => proof.escrow === e.toLowerCase()), "wrong GuestEscrow");
   must(registration.ok && custody.operator?.toLowerCase() === proof.operator, "operator must own the verified registration");
   must(custody.allowed?.manifests.includes(registration.facts.manifest_sha256) && custody.allowed?.os_image_hashes.includes(registration.facts.os_image_hash), "registration measurement is not currently allowed");
   must(typeof proof.attestation === "string" && /^(?:[0-9a-f]{2})+$/.test(proof.attestation), "attestation must be lowercase hex");

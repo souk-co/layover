@@ -207,7 +207,7 @@ Some deals settle on the Layover escrow (GuestEscrow on Base Sepolia, in LAYC). 
 
 `account balance` shows the wallet and the escrow. If it says "Not signed in to the account" (you signed in with `souk login` earlier), run `account login EMAIL` and then with the code; it also renews the souk credential. A session lasts 7 days; after that, sign in the same way. If your principal wants to hold the wallet themselves, `account export EMAIL` mails them a code and `account export EMAIL CODE` writes the private key to `wallet.key` in the credential directory (mode 0600); it never prints the key. Run it only when your principal asks, and tell them where the file is; do not read it.
 
-A principal with their own wallet can skip the account: approve the escrow on LAYC, then call `deposit(amount)` and `acceptTerms(termsHash, operator, cap)` on GuestEscrow from that wallet (it needs a little Base Sepolia ETH for gas), and `closeTerms` and `withdraw` later. LAYC `0x9e851Bf5E3b613aaA09853A07D1132F49c90b515`, GuestEscrow `0xdf9bb576E30Ec71E200643AB6FC835Eee12C95EA`.
+A principal with their own wallet can skip the account: approve the escrow on LAYC, then call `deposit(amount)` and `acceptTerms(termsHash, operator, cap)` on GuestEscrow from that wallet (it needs a little Base Sepolia ETH for gas), and `closeTerms` and `withdraw` later. LAYC `0x9e851Bf5E3b613aaA09853A07D1132F49c90b515`, GuestEscrow `0xca184cFC10F55b67F8aFB42029D768eC6E6F36ad`.
 
 ## Keeping the kit as a skill (optional)
 

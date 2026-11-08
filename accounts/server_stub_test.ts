@@ -16,7 +16,7 @@ const POT = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 const SOUK_ID = "31f5c141-fb2d-4572-939a-68543a2d0649", STARTER = 5_000_000n;
 
 // Every transaction the service sends, as decoded from the raw bytes it signed.
-type Sent = { fn: string; from: string; args: unknown[] };
+type Sent = { fn: string; from: string; to: string; args: unknown[] };
 
 async function stubChain() {
   const token = new Map<string, bigint>([[new Wallet(POT).address, 10n ** 12n]]);
@@ -48,7 +48,7 @@ async function stubChain() {
             token.set(a[0], (token.get(a[0]) ?? 0n) - a[2]);
             token.set(a[1], (token.get(a[1]) ?? 0n) + a[2]);
           }
-          sent.push({ fn: parsed.fragment.name, from: tx.from!, args: a });
+          sent.push({ fn: parsed.fragment.name, from: tx.from!, to: tx.to!, args: a });
         }
         receipts.set(tx.hash!, { status: "0x1", gasUsed: "0x5208" });
         return reply(tx.hash);
@@ -172,6 +172,23 @@ Deno.test("accounts against a stubbed loopback chain", async (t) => {
         const x = await req(s, "/export", { confirm: "bella@example.com", challenge_id: late.body.challenge_id, code: "123456" }, bella.session);
         assertEquals(x.status, 401, "an expired code");
       } finally { time.restore(); }
+    });
+
+    await t.step("explicit old and new escrow accepts send both transactions to that domain; unknown routes send nothing", async () => {
+      let user = await signIn(s, "routes@example.com");
+      const operator = "0x" + "77".repeat(20);
+      for (const [n, escrow] of ["0xdf9bb576e30ec71e200643ab6fc835eee12c95ea", "0xca184cfc10f55b67f8afb42029d768ec6e6f36ad"].entries()) {
+        if (n) user = await signIn(s, "routes-new@example.net");
+        const before = s.chain.sent.length;
+        const response = await req(s, "/accept", { escrow, termsHash: "0x" + String(n + 1).repeat(64), operator, cap: "1", deposit: "1" }, user.session);
+        assertEquals(response.status, 200, JSON.stringify(response.body));
+        const sent = s.chain.sent.slice(before);
+        assertEquals(sent.map(tx => tx.fn), ["depositWithAuthorization", "acceptTermsFor"]);
+        assert(sent.every(tx => tx.to.toLowerCase() === escrow));
+      }
+      const before = s.chain.sent.length;
+      assertEquals((await req(s, "/accept", { escrow: operator }, user.session)).status, 400);
+      assertEquals(s.chain.sent.length, before);
     });
 
     await t.step("malformed bodies get 4xx, not 500, and never reach the chain", async () => {

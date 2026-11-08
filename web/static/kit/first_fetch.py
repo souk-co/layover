@@ -109,7 +109,9 @@ def validate(quote, host, cap):
         not re.fullmatch(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", host) or
         not 0 < int(escrow["cap"]) * 100000 // x["price_per_gb"] <= 9007199254740991):
         raise ValueError("allocation exceeds supported standing terms")
-    expected = dict(chain_id=84532, escrow="0xdf9bb576e30ec71e200643ab6fc835eee12c95ea", token="0x9e851bf5e3b613aaa09853a07d1132f49c90b515",
+    if canonical.get("escrow") not in ("0xca184cfc10f55b67f8afb42029d768ec6e6f36ad", "0xdf9bb576e30ec71e200643ab6fc835eee12c95ea"):
+        raise ValueError("unknown guest escrow")
+    expected = dict(chain_id=84532, escrow=canonical["escrow"], token="0x9e851bf5e3b613aaa09853a07d1132f49c90b515",
                     thread=quote["thread"], agent_id=x["agent_id"], mode="shared", domains=[host], category="price_check", minutes=5,
                     operator=escrow["operator"], price_per_gb=x["price_per_gb"], cap=escrow["cap"], kind="layover-terms/1")
     if quote["base"] != BASE or canonical != expected or x["domains"] != [host] or x["exclusive"] is not False or x["minutes"] != 5 or x["category"] != "price_check" or not 0 < int(escrow["cap"]) <= cap * 10000 or int(escrow["deposit"]) > cap * 10000 or quote["expires"] <= time.time():
@@ -189,7 +191,7 @@ def main():
     # Cleanup and result reconciliation remain possible after the quote expires.
     if state["stage"] in ("fetch_sent", "fetched", "closed"):
         if state["stage"] != "closed":
-            run("account.py", "close", state["quote"]["terms"]["escrow"]["terms_hash"])
+            run("account.py", "close", state["quote"]["terms"]["escrow"]["terms_hash"], json.loads(state["quote"]["terms"]["escrow"]["terms"])["escrow"])
             mark("closed")
         if "result" in state:
             print(json.dumps(state["result"]))
@@ -221,7 +223,7 @@ def main():
         state["account_id"] = hashlib.sha256(bytes.fromhex(json.loads(account.read_text())["secret"])).hexdigest()
         mark("accept_sent")
         e = x["escrow"]
-        run("account.py", "accept", e["terms_hash"], e["operator"], e["cap"], e["deposit"])
+        run("account.py", "accept", e["terms_hash"], e["operator"], e["cap"], e["deposit"], json.loads(e["terms"])["escrow"])
         mark("accepted")
     if state["stage"] == "accept_sent":
         raise Pending("account acceptance outcome unknown; reconcile on chain before advancing")

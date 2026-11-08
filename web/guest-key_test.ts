@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from "jsr:@std/assert@1";
 import { checkGuestKey } from "./guest-key.ts";
-import { configure, GUEST_ESCROW, handler } from "./server.ts";
+import { configure, GUEST_ESCROW, PREVIOUS_GUEST_ESCROW, handler } from "./server.ts";
 import { hex } from "./verify.ts";
 const f = { run: "33".repeat(32), manifest_sha256: "22".repeat(32), os_image_hash: "11".repeat(32), key_id: "44".repeat(32), caller: "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824" };
 const operator = "0x" + "55".repeat(20), address = "0x" + "66".repeat(20);
@@ -41,11 +41,15 @@ Deno.test("HTTP registration persists and serves optional public proof; invalid 
   try {
     assertEquals((await post({ ...body, guest_key: { ...proof, escrow: operator } })).status, 400);
     assertEquals(await Deno.readTextFile(dir + "/records.jsonl").catch(() => ""), "");
+    const legacy = { ...proof, escrow: PREVIOUS_GUEST_ESCROW.toLowerCase() };
+    assertEquals((await post({ ...body, guest_key: legacy })).status, 200);
+    const legacyGet = await handler(new Request("http://x/api/agents?agent_id=host"), { dataDir: dir });
+    assertEquals((await legacyGet.json())[0].guest_escrow, legacy.escrow);
     assertEquals((await post({ ...body, guest_key: proof })).status, 200);
     const get = await handler(new Request("http://x/api/agents?agent_id=host"), { dataDir: dir });
     assertEquals((await get.json())[0].guest_key, proof);
     const summary = await handler(new Request("http://x/api/agents"), { dataDir: dir }); const row = (await summary.json())[0]; assertEquals(row.guest_key, undefined); assertEquals(row.guest_key_available, true);
-    const kept = JSON.parse((await Deno.readTextFile(dir + "/records.jsonl")).trim()); assertEquals(kept.guest_key, proof);
+    const kept = JSON.parse((await Deno.readTextFile(dir + "/records.jsonl")).trim().split("\n").at(-1)!); assertEquals(kept.guest_key, proof);
     assertEquals((await post(body)).status, 200);
     let release!: () => void, entered!: () => void;
     const waiting = new Promise<void>(r => release = r), started = new Promise<void>(r => entered = r);

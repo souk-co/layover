@@ -7,11 +7,11 @@ import { CALL_TIMEOUT_MS, heliosChain, prewarmChain } from "./chain.mjs";
 const policy = { attest: "0x" + "11".repeat(20), registry: "0x" + "22".repeat(20), canary: "0x" + "33".repeat(20) };
 const selectors = { key: "0xdde5b7a1", category: "0x5523509a", registry: "0xb4eb10ce", rp: "0x65f4df9c", build: "0xb7b014b6", image: "0xe62b7cbd", burned: "0xda746951" };
 const word = n => BigInt(n).toString(16).padStart(64, "0");
-async function fixture() {
+async function fixture(category = 3) {
   const key = await deviceKey(), rp = new Uint8Array(32).fill(0x44), build = new Uint8Array(32).fill(0x55), image = new Uint8Array(32).fill(0x66);
   const cdhash = "77".repeat(32);
   const registration = { cdhash, attestation: await attest(key, { os_image_hash: image, manifest_sha256: new Uint8Array(32), run: new Uint8Array(32),
-    caller: new Uint8Array(32), report_data: new Uint8Array(64), rp, cdhash: unhex(cdhash), category: 3 }) };
+    caller: new Uint8Array(32), report_data: new Uint8Array(64), rp, cdhash: unhex(cdhash), category }) };
   const values = { [selectors.key]: hex(key.x) + hex(key.y) + word(1899590400) + word(0) + word(1), [selectors.category]: word(3),
     [selectors.registry]: policy.registry.slice(2).padStart(64, "0"), [selectors.rp]: hex(rp), [selectors.build]: hex(build),
     [selectors.image]: word(0), [selectors.burned]: word(0) };
@@ -135,5 +135,24 @@ test("malformed assertions fail before any network read, and raw heliosChain ret
     const chain = heliosChain(policy);
     await chain.key(f.key.kid); await chain.key(f.key.kid);
     assert.equal(network.calls.length, 2);
+  } finally { globalThis.fetch = saved; }
+});
+
+
+test("Developer ID signed assertion verifies against the development and Developer ID registry", async () => {
+  const f = await fixture(6), network = transport(f.values), saved = globalThis.fetch;
+  globalThis.fetch = network.fetch;
+  try {
+    const a = await decodeAttestation(unhex(f.registration.attestation));
+    await checkAssertion(a, heliosChain(policy), Date.now());
+  } finally { globalThis.fetch = saved; }
+});
+
+test("App Store signed assertion is outside the Mac registry categories", async () => {
+  const f = await fixture(5), network = transport(f.values), saved = globalThis.fetch;
+  globalThis.fetch = network.fetch;
+  try {
+    const a = await decodeAttestation(unhex(f.registration.attestation));
+    await assert.rejects(checkAssertion(a, heliosChain(policy), Date.now()), /validation category/);
   } finally { globalThis.fetch = saved; }
 });
